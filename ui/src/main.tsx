@@ -43,7 +43,17 @@ function DeviceCard ({ d, api, onChanged, actor }: { d: DeviceStatus, api: Api, 
   return (
     <div className={`card ${actor}`}>
       <h3>
-        {d.id}
+        <span>
+          {d.id}
+          <span
+            className="nickname"
+            title="click to rename"
+            onClick={() => {
+              const next = window.prompt('nickname for ' + d.id, d.nickname ?? '')
+              if (next !== null) void api.rename(d.id, next).then(onChanged)
+            }}
+          >{d.nickname ? ` · ${d.nickname}` : ' · ✎'}</span>
+        </span>
         <span style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
           {d.mock && <span className="tag mock">mock</span>}
           <span className={`modetag ${actor}`}>{actor === 'auto' ? '⚡ ' : actor === 'manual' ? '✋ ' : ''}{mode}</span>
@@ -211,6 +221,7 @@ function Dashboard ({ api, me }: { api: Api, me: Me }) {
   const [devices, setDevices] = useState<DeviceStatus[]>([])
   const [autopilot, setAutopilot] = useState<AutopilotStatus | null>(null)
   const [modeError, setModeError] = useState<string | null>(null)
+  const [autoOpen, setAutoOpen] = useState(false)
   const [stations, setStations] = useState<StationInfo[]>([])
   const [marmot, setMarmot] = useState<Record<string, unknown> | null>(null)
   const [events, setEvents] = useState<Array<{ ts: number, kind: string, message: string }>>([])
@@ -246,7 +257,7 @@ function Dashboard ({ api, me }: { api: Api, me: Me }) {
       <header>
         <div className="brand">mdk<span>²</span></div>
         <nav className="tabs">
-          {((['overview', 'people', 'activity'] as const)).map((t) => (
+          {(['overview', 'people', 'activity'] as const).map((t) => (
             <button key={t} className={tab === t ? 'tab active' : 'tab'} onClick={() => setTab(t)}>{t}</button>
           ))}
         </nav>
@@ -258,46 +269,48 @@ function Dashboard ({ api, me }: { api: Api, me: Me }) {
 
       {tab === 'overview' && (
         <>
-          {/* Mode control: MANUAL (default, narrow) | AUTO (wide, station picker inside) */}
-          <div className="modecontrol">
+          {/* Minimal mode toggle; AUTO expands to station + thresholds */}
+          <div className="modebar">
             <button
-              className={`mode ${fleetState.actor !== 'auto' ? 'on' : ''}`}
-              onClick={() => { setModeError(null); if (autopilot?.config.enabled) void api.pauseAutopilot().then(refresh) }}
-            >
-              MANUAL
-              <span className="modesub">{fleetState.actor === 'manual' ? (autopilot?.config.enabled ? 'paused ' + Math.ceil(((autopilot.overrideUntil ?? 0) - Date.now()) / 60000) + 'm' : 'full control') : 'takes over'}</span>
-            </button>
+              className={`modechip${fleetState.actor === 'auto' ? '' : ' on'}`}
+              onClick={() => { setModeError(null); setAutoOpen(false); if (autopilot?.config.enabled) void api.updateAutopilot({ enabled: false }).then(refresh) }}
+            >MANUAL</button>
+            <button
+              className={`modechip${fleetState.actor === 'auto' ? ' on auto' : ' auto'}`}
+              onClick={() => {
+                const cfg = autopilot?.config
+                if (cfg?.enabled) { void api.resumeAutopilot().then(refresh); return }
+                if ((cfg?.stations.length ?? 0) === 0) { setModeError('Pick a weather station first.'); setAutoOpen(true); return }
+                if ((cfg?.onUgm3 ?? 0) <= (cfg?.offUgm3 ?? 0)) { setModeError('Purify threshold must be above idle threshold.'); setAutoOpen(true); return }
+                setModeError(null)
+                void api.updateAutopilot({ enabled: true }).then(refresh)
+              }}
+            >AUTO</button>
+            <span className="modebar-state muted">
+              {fleetState.actor === 'auto' ? fleetState.title.replace(/^AUTO · /, '') : 'you control the devices'}
+            </span>
+          </div>
+          {modeError && <div className="mode-error">⚠️ {modeError}</div>}
 
-            <div className={`autopane ${fleetState.actor === 'auto' ? 'on' : ''}`}>
-              <button
-                className="autopane-head"
-                onClick={() => {
-                  const cfg = autopilot?.config
-                  if ((cfg?.stations.length ?? 0) === 0) { setModeError('Tick at least one station below, then press AUTO again.'); return }
-                  if ((cfg?.onUgm3 ?? 0) <= (cfg?.offUgm3 ?? 0)) { setModeError(`Purify threshold (${cfg?.onUgm3}) must be above idle (${cfg?.offUgm3}) — fix in Automation settings.`); return }
-                  setModeError(null)
-                  if (!cfg?.enabled) void api.updateAutopilot({ enabled: true }).then(refresh)
-                  else void api.resumeAutopilot().then(refresh)
-                }}
-              >
-                <span className="autopane-title">AUTO</span>
-                <span className="modesub">{fleetState.actor === 'auto' ? fleetState.title.replace(/^AUTO · /, '') : (autopilot?.config.enabled ? 'paused' : 'off')}</span>
-              </button>
-              <div className="autopane-stations">
-                <div className="muted" style={{ fontSize: 11, marginBottom: 4 }}>stations to watch</div>
-                {stations.length === 0 && <div className="muted">none found yet…</div>}
+          {(autoOpen || fleetState.actor === 'auto') && autopilot && (
+            <div className="autosettings">
+              <div className="autosettings-col">
+                <div className="muted" style={{ fontSize: 11, marginBottom: 4 }}>weather station</div>
+                {/* Configured stations missing from relay discovery stay selectable. */}
+                {(autopilot.config.stations ?? []).filter((pk) => !stations.some((s) => s.pubkey === pk)).map((pk) => (
+                  <label key={pk} className="stationrow sel">
+                    <input type="radio" name="station" checked onChange={() => {}} />
+                    <span className="stationname">station {short(pk)} · selected</span>
+                  </label>
+                ))}
                 {stations.map((s) => {
-                  const selected = (autopilot?.config.stations ?? []).includes(s.pubkey)
-                  const reading = (autopilot?.readings ?? []).find((r) => r.station === s.pubkey)
+                  const selected = (autopilot.config.stations ?? [])[0] === s.pubkey
+                  const reading = (autopilot.readings ?? []).find((r) => r.station === s.pubkey)
                   return (
                     <label key={s.pubkey} className={`stationrow${selected ? ' sel' : ''}`}>
                       <input
-                        type="checkbox"
-                        checked={selected}
-                        onChange={() => {
-                          const cur = autopilot?.config.stations ?? []
-                          void api.updateAutopilot({ stations: selected ? cur.filter((k) => k !== s.pubkey) : [...cur, s.pubkey] }).then(refresh)
-                        }}
+                        type="radio" name="station" checked={selected}
+                        onChange={() => { setModeError(null); void api.updateAutopilot({ stations: [s.pubkey] }).then(refresh) }}
                       />
                       <span className="stationname">{s.name ?? short(s.npub)}</span>
                       {(reading ?? s.latest) && (
@@ -307,14 +320,47 @@ function Dashboard ({ api, me }: { api: Api, me: Me }) {
                   )
                 })}
               </div>
+              <div className="autosettings-col">
+                {/* Current reading, big — colored by which band it falls in */}
+                {(() => {
+                  const ov = autopilot.config.overrideValue
+                  const r = ov !== null && ov !== undefined
+                    ? { value: ov, at: Date.now() }
+                    : (autopilot.readings ?? []).find((x) => (autopilot.config.stations ?? [])[0] === x.station) ?? autopilot.readings?.[0]
+                  const band = r ? (r.value >= autopilot.config.onUgm3 ? 'hot' : r.value <= autopilot.config.offUgm3 ? 'ok' : 'mid') : 'none'
+                  return (
+                    <div className={`pm-now ${band}`}>
+                      <div className="pm-now-k">{ov !== null && ov !== undefined ? 'PM2.5 · OVERRIDE' : r ? 'PM2.5 now' : 'no reading yet'}</div>
+                      <div className="pm-now-v">{r ? r.value.toFixed(1) : '—'}<small>µg/m³</small></div>
+                      {r && <div className="pm-now-ago">{ov !== null && ov !== undefined ? 'manual value' : ago(r.at)}</div>}
+                    </div>
+                  )
+                })()}
+                <div className="field">purify at ≥
+                  <input type="number" defaultValue={autopilot.config.onUgm3} className={autopilot.config.onUgm3 <= autopilot.config.offUgm3 ? 'invalid' : ''} onBlur={(e) => { void api.updateAutopilot({ onUgm3: Number(e.target.value) }).then(refresh) }} /> µg/m³
+                </div>
+                <div className="field">idle at ≤
+                  <input type="number" defaultValue={autopilot.config.offUgm3} className={autopilot.config.onUgm3 <= autopilot.config.offUgm3 ? 'invalid' : ''} onBlur={(e) => { void api.updateAutopilot({ offUgm3: Number(e.target.value) }).then(refresh) }} /> µg/m³
+                </div>
+                {autopilot.config.onUgm3 <= autopilot.config.offUgm3 && <div className="mode-error">purify must be above idle</div>}
+                <div className="field">value source
+                  <label className="stationrow">
+                    <input type="radio" name="valsrc" checked={autopilot.config.overrideValue === null}
+                      onChange={() => { void api.updateAutopilot({ overrideValue: null }).then(refresh) }} />
+                    <span className="stationname">station value</span>
+                  </label>
+                  <label className="stationrow">
+                    <input type="radio" name="valsrc" checked={autopilot.config.overrideValue !== null}
+                      onChange={() => { void api.updateAutopilot({ overrideValue: autopilot.config.overrideValue ?? 45 }).then(refresh) }} />
+                    <span className="stationname">override</span>
+                    <input type="number" style={{ width: 64 }} defaultValue={autopilot.config.overrideValue ?? 45}
+                      onBlur={(e) => { const v = Number(e.target.value); if (Number.isFinite(v)) void api.updateAutopilot({ overrideValue: v }).then(refresh) }} />
+                    <span className="muted">µg/m³</span>
+                  </label>
+                </div>
+              </div>
             </div>
-          </div>
-          {modeError && <div className="mode-error">⚠️ {modeError}</div>}
-
-          <details className="stationsbox" ref={stationsRef}>
-            <summary>Automation settings{lastReading ? ` · latest ${lastReading.value.toFixed(1)} µg/m³ ${ago(lastReading.at)}` : ''}</summary>
-            <AutopilotPanel status={autopilot} stations={stations} api={api} onChanged={refresh} />
-          </details>
+          )}
 
           {/* 3. Fleet stats + devices */}
           <div className="fleetbar">

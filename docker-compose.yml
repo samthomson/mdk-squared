@@ -1,0 +1,39 @@
+# mdk² — Dokploy deployment.
+# In Dokploy: create a Docker Compose project pointing at this repo,
+# set the env vars below in the project's Environment panel (ADMIN_NPUB
+# is required; the rest have sane defaults), then expose port 8080
+# through the Dokploy proxy to your domain.
+services:
+  mdk2:
+    build: .
+    image: mdk-squared
+    restart: unless-stopped
+    ports:
+      - '8080'
+    environment:
+      # REQUIRED — your npub (admin). Set in Dokploy's env panel; anything
+      # set here is only a fallback default.
+      ADMIN_NPUB: ${ADMIN_NPUB:?set ADMIN_NPUB in Dokploy env}
+      PORT: '8080'
+      DATA_DIR: /data
+      DHT_HOST: 127.0.0.1
+      DHT_PORT: '49737'
+      MOCK_COUNT: ${MOCK_COUNT:-3}
+      MOCK_PORT_BASE: '18100'
+      MARMOT_ENABLED: ${MARMOT_ENABLED:-true}
+      RELAYS: ${RELAYS:-wss://relay.primal.net,wss://relay.samt.st,wss://relay.ditto.pub,wss://relay.wellorder.net}
+      WEATHER_RELAYS: ${WEATHER_RELAYS:-wss://relay.relaying.earth,wss://relay.primal.net,wss://relay.samt.st}
+      AUTOPILOT_ON_UGM3: ${AUTOPILOT_ON_UGM3:-35}
+      AUTOPILOT_OFF_UGM3: ${AUTOPILOT_OFF_UGM3:-25}
+      AUTOPILOT_DEFAULT_IDLE_MODE: ${AUTOPILOT_DEFAULT_IDLE_MODE:-eco}
+    volumes:
+      - mdk2-data:/data
+    healthcheck:
+      test: ['CMD', 'node', '-e', "fetch('http://127.0.0.1:8080/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+
+volumes:
+  mdk2-data:

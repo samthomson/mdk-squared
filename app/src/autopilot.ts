@@ -21,6 +21,8 @@ export interface AutopilotConfig {
   onUgm3: number
   offUgm3: number
   idleMode: string
+  /** Manual override reading (µg/m³) replacing the station value, or null. */
+  overrideValue: number | null
   stations: string[] // hex pubkeys of kind 16158 stations
 }
 
@@ -48,7 +50,8 @@ export class Autopilot {
     private readonly relays: string[],
     defaults: AutopilotConfig
   ) {
-    this.cfg = store.readJson<AutopilotConfig>('autopilot.json', defaults)
+    const persisted = store.readJson<Partial<AutopilotConfig>>('autopilot.json', {})
+    this.cfg = { ...defaults, ...persisted, overrideValue: persisted.overrideValue ?? null }
   }
 
   status (): AutopilotStatus {
@@ -61,6 +64,10 @@ export class Autopilot {
   }
 
   update (patch: Partial<AutopilotConfig>): AutopilotStatus {
+    // Enabling takes control back from any manual override.
+    if (patch.enabled === true) this.overrideUntil = null
+    // Single-station model: extra entries (legacy checkbox picks) are dropped.
+    if (patch.stations && patch.stations.length > 1) patch.stations = [patch.stations[0]]
     const before = JSON.stringify([this.cfg.enabled, this.cfg.stations])
     this.cfg = { ...this.cfg, ...patch }
     this.store.writeJson('autopilot.json', this.cfg)
@@ -72,8 +79,8 @@ export class Autopilot {
 
   /** A manual device command calls this: humans override automation. */
   manualOverride (): void {
-    this.overrideUntil = Date.now() + OVERRIDE_MS
-    this.store.record('autopilot', 'manual command — autopilot paused 30 min')
+    // No-op: manual device commands exist only in MANUAL mode; AUTO never
+    // needs to be "paused" out from under a click.
   }
 
   /** Clear a manual override early — the AUTO banner's "resume" button. */
@@ -88,35 +95,12 @@ export class Autopilot {
    * on first use) and auto-select it, so the whole nostr→autopilot→MDK loop
    * runs without hardware. The live subscription reacts like any station.
    */
-  async simulate (pm25: number): Promise<{ station: string, value: number }> {
-    const seed = this.store.readJson<{ secretHex: string } | null>('weather-seed.json', null)
-    const secretHex = seed?.secretHex ?? Buffer.from(generateSecretKey()).toString('hex')
-    if (!seed) this.store.writeJson('weather-seed.json', { secretHex })
-    const sk = new Uint8Array(Buffer.from(secretHex, 'hex'))
-    const pubkey = getPublicKey(sk)
-
-    if (!seed) {
-      await Promise.allSettled(this.pool.publish(this.relays, finalizeEvent({
-        kind: 16158,
-        created_at: Math.floor(Date.now() / 1000),
-        tags: [['name', 'mdk² demo station'], ['g', 'u4pr'], ['power', 'mains'], ['connectivity', 'wifi'], ['sensor', 'pm25', 'PMS5003']],
-        content: ''
-      }, sk), { maxWait: 8000 }))
-    }
-    const reading = finalizeEvent({
-      kind: 4223,
-      created_at: Math.floor(Date.now() / 1000),
-      tags: [['t', 'weather'], ['a', `16158:${pubkey}:`], ['pm25', String(pm25), 'PMS5003']],
-      content: ''
-    }, sk)
-    const settled = await Promise.allSettled(this.pool.publish(this.relays, reading, { maxWait: 8000 }))
-    const accepted = settled.filter((r) => r.status === 'fulfilled').length
-    if (accepted === 0) throw new Error('ERR_SIMULATE_PUBLISH_FAILED: no relay accepted the reading')
-
-    if (!this.cfg.stations.includes(pubkey)) this.update({ stations: [...this.cfg.stations, pubkey] })
-    this.store.record('autopilot', `simulated station reading pm25=${pm25} (accepted by ${accepted}/${settled.length} relays)`)
-    return { station: pubkey, value: pm25 }
+  async simulate (pm25: number): Promise<{ overrideValue: number | null }> {
+    this.update({ overrideValue: pm25 })
+    this.store.record('autopilot', `override value set to ${pm25} µg/m³`)
+    return { overrideValue: pm25 }
   }
+
 
   async discoverStations (): Promise<StationInfo[]> {
     const events = (await this.pool.querySync(this.relays, { kinds: [16158] }, { maxWait: 9000 }))
@@ -186,19 +170,20 @@ export class Autopilot {
   private evaluate (trigger: string): void {
     if (!this.cfg.enabled) return
     const now = Date.now()
-    const fresh = [...this.readings.values()].filter((r) => now - r.at < 15 * 60 * 1000)
-    if (fresh.length === 0) return
-    const mean = fresh.reduce((sum, r) => sum + r.value, 0) / fresh.length
+    // Manual override replaces the station value entirely.
+    let mean: number
+    if (this.cfg.overrideValue !== null && Number.isFinite(this.cfg.overrideValue)) {
+      mean = this.cfg.overrideValue
+    } else {
+      const fresh = [...this.readings.values()].filter((r) => now - r.at < 15 * 60 * 1000 && this.cfg.stations.includes(r.station))
+      if (fresh.length === 0) return
+      mean = fresh.reduce((sum, r) => sum + r.value, 0) / fresh.length
+    }
 
     if (!this.engaged && mean >= this.cfg.onUgm3) {
-      if (this.overrideActive(now)) {
-        this.store.record('autopilot', `pm25 ${mean.toFixed(1)} ≥ ${this.cfg.onUgm3} but manual override active — holding`, { trigger })
-        return
-      }
       this.engaged = true
       void this.act('high', `pm25 ${mean.toFixed(1)} ≥ ${this.cfg.onUgm3} — purification HIGH`, trigger)
     } else if (this.engaged && mean <= this.cfg.offUgm3) {
-      if (this.overrideActive(now)) return
       this.engaged = false
       void this.act(this.cfg.idleMode, `pm25 ${mean.toFixed(1)} ≤ ${this.cfg.offUgm3} — purification ${this.cfg.idleMode}`, trigger)
     }

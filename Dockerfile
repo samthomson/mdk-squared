@@ -1,5 +1,8 @@
-# mdk² — build the UI, then the all-in-one app image (kernel + worker +
-# mocks + fastify + UI in one process; see PLAN.md for the topology note).
+# mdk² — all-in-one image: kernel + worker + mocks + fastify + UI.
+# (The wn/wnd binaries for White Noise group control are NOT built here —
+# Rust-in-Docker is slow and brittle. Mount prebuilt binaries at
+# /usr/local/bin if you need chat control on the server; without them the
+# app runs everything else and marmot falls back.)
 FROM node:24-slim AS uibuild
 WORKDIR /srv/ui
 COPY ui/package.json ui/package-lock.json* ./

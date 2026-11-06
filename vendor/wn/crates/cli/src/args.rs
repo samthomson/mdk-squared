@@ -1,0 +1,1506 @@
+//! Declarative `clap` command-line argument surface for the `wn` CLI.
+
+use std::net::SocketAddr;
+use std::path::PathBuf;
+
+use clap::{Parser, Subcommand, ValueEnum};
+use serde::{Deserialize, Serialize};
+
+/// mdk#2258: a group change on a group that is still catching up fails with
+/// `group_catching_up` unless the caller accepts the fork risk.
+const ACCEPT_STALE_HELP: &str = "If the group is still catching up on missed changes, make this \
+group change anyway. The device may be behind, so the change can split the group for everyone";
+
+/// mdk#2255: a group change while the group's last change has not reached
+/// every relay fails with `group_commit_undelivered` unless the caller accepts it.
+const ACCEPT_UNDELIVERED_HELP: &str = "If the group's last change has not reached every relay yet, make this group change anyway. Members who read only those relays may not follow either change";
+
+#[derive(Parser, Clone, Debug, Serialize, Deserialize)]
+#[command(
+    name = "wn",
+    version,
+    about = "White Noise account, group, message, stream, and daemon CLI",
+    disable_help_subcommand = true
+)]
+pub(crate) struct Cli {
+    #[arg(
+        long,
+        global = true,
+        value_name = "PATH",
+        help = "Use this White Noise data directory"
+    )]
+    pub(crate) home: Option<PathBuf>,
+    #[arg(
+        long,
+        global = true,
+        value_name = "PATH",
+        help = "Connect to this wnd daemon socket"
+    )]
+    pub(crate) socket: Option<PathBuf>,
+    #[arg(long, global = true, value_name = "URL", hide = true)]
+    pub(crate) relay: Option<String>,
+    #[arg(skip)]
+    #[serde(default)]
+    pub(crate) daemon_discovery_relays: Vec<String>,
+    #[arg(skip)]
+    #[serde(default)]
+    pub(crate) daemon_default_account_relays: Vec<String>,
+    #[arg(
+        long,
+        global = true,
+        value_enum,
+        value_name = "STORE",
+        help = "Store account secrets in the OS keychain or local files"
+    )]
+    pub(crate) secret_store: Option<SecretStoreKind>,
+    #[arg(
+        long,
+        global = true,
+        value_name = "SERVICE",
+        help = "Use this OS keychain service name for local secret storage"
+    )]
+    pub(crate) keychain_service: Option<String>,
+    #[arg(
+        long,
+        value_name = "NPUB_OR_HEX",
+        help = "Select the account by npub or hex pubkey"
+    )]
+    pub(crate) account: Option<String>,
+    #[arg(long, global = true, help = "Emit machine-readable JSON")]
+    pub(crate) json: bool,
+    #[command(subcommand)]
+    pub(crate) command: Command,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, ValueEnum)]
+pub enum SecretStoreKind {
+    Keychain,
+    File,
+}
+
+impl SecretStoreKind {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            SecretStoreKind::Keychain => "keychain",
+            SecretStoreKind::File => "file",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, ValueEnum)]
+pub(crate) enum MaintenancePolicySetting {
+    Enabled,
+    Disabled,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Subcommand)]
+pub(crate) enum Command {
+    #[command(about = "Open the interactive terminal UI")]
+    Tui {
+        #[arg(
+            long,
+            value_name = "URLS",
+            value_delimiter = ',',
+            help = "Comma-separated discovery relays forwarded to daemon start and account setup on first run"
+        )]
+        discovery_relays: Vec<String>,
+        #[arg(
+            long,
+            value_name = "URLS",
+            value_delimiter = ',',
+            help = "Comma-separated default account relays forwarded to daemon start and account setup on first run"
+        )]
+        default_account_relays: Vec<String>,
+    },
+    #[command(about = "Inspect local runtime diagnostics")]
+    Debug {
+        #[command(subcommand)]
+        command: DebugCommand,
+    },
+    #[command(
+        name = "create-identity",
+        about = "Create a new local signing identity"
+    )]
+    CreateIdentity,
+    #[command(about = "Import an nsec from stdin or add a public npub identity")]
+    Login {
+        #[arg(
+            value_name = "NPUB_OR_HEX",
+            help = "npub or hex pubkey to track as a public account"
+        )]
+        identity: Option<String>,
+        #[serde(default)]
+        #[arg(long, help = "Read an nsec private key from stdin instead of argv")]
+        nsec_stdin: bool,
+        #[arg(
+            long,
+            value_name = "URL",
+            help = "Command-local relay used for account setup"
+        )]
+        relay: Option<String>,
+    },
+    #[command(about = "Show current account identities")]
+    Whoami,
+    #[command(about = "Log out and remove a local account")]
+    Logout {
+        #[arg(value_name = "NPUB_OR_HEX", help = "Account to remove")]
+        pubkey: String,
+    },
+    #[command(
+        name = "export-nsec",
+        about = "Exporting private keys is disabled by White Noise CLI policy"
+    )]
+    ExportNsec {
+        #[arg(
+            value_name = "NPUB_OR_HEX",
+            help = "Account whose secret key was requested"
+        )]
+        pubkey: String,
+    },
+    #[command(hide = true)]
+    Account {
+        #[command(subcommand)]
+        command: AccountCommand,
+    },
+    #[command(about = "Manage local account identities and relay lists")]
+    Accounts {
+        #[command(subcommand)]
+        command: AccountCommand,
+    },
+    #[command(about = "Inspect and repair MLS KeyPackage publication")]
+    Keys {
+        #[command(subcommand)]
+        command: KeyPackageCommand,
+    },
+    #[command(about = "List chats and subscribe to chat projection updates")]
+    Chats {
+        #[command(subcommand)]
+        command: ChatsCommand,
+    },
+    #[command(about = "List media references in a group")]
+    Media {
+        #[command(subcommand)]
+        command: MediaCommand,
+    },
+    #[command(hide = true)]
+    Group {
+        #[command(subcommand)]
+        command: GroupCommand,
+        #[arg(long, global = true, help = ACCEPT_STALE_HELP)]
+        #[serde(default)]
+        accept_stale: bool,
+        #[arg(long, global = true, help = ACCEPT_UNDELIVERED_HELP)]
+        #[serde(default)]
+        accept_undelivered: bool,
+    },
+    #[command(about = "Create groups and manage membership and admin state")]
+    Groups {
+        #[command(subcommand)]
+        command: GroupsCommand,
+        #[arg(long, global = true, help = ACCEPT_STALE_HELP)]
+        #[serde(default)]
+        accept_stale: bool,
+        #[arg(long, global = true, help = ACCEPT_UNDELIVERED_HELP)]
+        #[serde(default)]
+        accept_undelivered: bool,
+    },
+    #[command(hide = true)]
+    Message {
+        #[command(subcommand)]
+        command: MessageCommand,
+    },
+    #[command(about = "Send, list, search, delete, retry, and react to messages")]
+    Messages {
+        #[command(subcommand)]
+        command: MessageCommand,
+    },
+    #[command(about = "Manage the local account follow list")]
+    Follows {
+        #[command(subcommand)]
+        command: FollowsCommand,
+    },
+    #[command(about = "Show or publish the selected account Nostr profile")]
+    Profile {
+        #[command(subcommand)]
+        command: ProfileCommand,
+    },
+    #[command(about = "Inspect and update account relay lists")]
+    Relays {
+        #[command(subcommand)]
+        command: RelaysCommand,
+    },
+    /// Inspect or change the local Share usage and diagnostics permission.
+    UsageDiagnostics {
+        #[command(subcommand)]
+        command: UsageDiagnosticsCommand,
+    },
+    #[command(about = "Read and update local CLI preferences")]
+    Settings {
+        #[command(subcommand)]
+        command: SettingsCommand,
+    },
+    #[command(about = "Look up known Nostr users from the local directory")]
+    Users {
+        #[command(subcommand)]
+        command: UsersCommand,
+    },
+    #[command(about = "Subscribe to local notification updates")]
+    Notifications {
+        #[command(subcommand)]
+        command: NotificationsCommand,
+    },
+    #[command(about = "Start, watch, finish, and verify agent text streams")]
+    Stream {
+        #[command(subcommand)]
+        command: StreamCommand,
+    },
+    #[command(about = "Start, stop, and inspect the local wnd runtime")]
+    Daemon {
+        #[command(subcommand)]
+        command: DaemonCommand,
+    },
+    #[command(about = "Process relay events for the selected account")]
+    Sync,
+    #[command(
+        name = "relay-stats",
+        about = "Show device-local relay performance telemetry (aggregate, no relay URLs)"
+    )]
+    RelayStats,
+    #[command(about = "Delete all local White Noise CLI data after confirmation")]
+    Reset {
+        #[arg(long, help = "Required safety flag before deleting local data")]
+        confirm: bool,
+    },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Subcommand)]
+pub(crate) enum DebugCommand {
+    #[command(
+        name = "relay-control-state",
+        about = "Show the relay-plane subscription and control-state snapshot"
+    )]
+    RelayControlState,
+    #[command(about = "Run a local runtime health check for the selected account")]
+    Health,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Subcommand)]
+pub(crate) enum AccountCommand {
+    #[command(about = "Create a local account and publish its bootstrap records")]
+    Create {
+        #[arg(
+            value_name = "NPUB_OR_HEX",
+            help = "Optional npub or hex pubkey to track"
+        )]
+        identity: Option<String>,
+        #[serde(default)]
+        #[arg(long, help = "Read an nsec private key from stdin instead of argv")]
+        nsec_stdin: bool,
+        #[arg(
+            long,
+            value_name = "URLS",
+            value_delimiter = ',',
+            help = "Comma-separated account relay list to publish"
+        )]
+        default_relays: Vec<String>,
+        #[arg(
+            long,
+            value_name = "URLS",
+            value_delimiter = ',',
+            help = "Comma-separated bootstrap relays used to find account records"
+        )]
+        bootstrap_relays: Vec<String>,
+        #[arg(
+            long,
+            help = "Publish missing relay-list records during account creation"
+        )]
+        publish_missing_relay_lists: bool,
+    },
+    #[command(about = "List local accounts")]
+    List,
+    #[command(about = "Show account readiness, relay-list, and KeyPackage status")]
+    Status {
+        #[arg(
+            value_name = "NPUB_OR_HEX",
+            help = "Optional account npub or hex pubkey"
+        )]
+        account: Option<String>,
+    },
+    #[command(
+        name = "relay-lists",
+        about = "Fetch and inspect published relay lists"
+    )]
+    RelayLists {
+        #[arg(
+            value_name = "NPUB_OR_HEX",
+            help = "Account to inspect; defaults to selected account"
+        )]
+        account: Option<String>,
+        #[arg(
+            long,
+            value_name = "URLS",
+            value_delimiter = ',',
+            help = "Comma-separated relays to use for relay-list discovery"
+        )]
+        bootstrap_relays: Vec<String>,
+    },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Subcommand)]
+pub(crate) enum KeyPackageCommand {
+    #[command(about = "List local KeyPackage publication records")]
+    List,
+    #[command(about = "Publish or retry the durable stable-slot KeyPackage replacement")]
+    Publish,
+    #[command(
+        name = "maintenance-status",
+        about = "Show durable KeyPackage lifecycle and replacement status"
+    )]
+    MaintenanceStatus,
+    #[command(
+        about = "Force mint and publish a fresh replacement KeyPackage",
+        alias = "force-publish"
+    )]
+    Rotate,
+    #[command(about = "Publish a Nostr deletion for one KeyPackage event")]
+    Delete { event_id: String },
+    #[command(
+        name = "delete-all",
+        about = "Publish Nostr deletions for all relay-published KeyPackage events"
+    )]
+    DeleteAll {
+        #[arg(long)]
+        confirm: bool,
+    },
+    #[command(about = "Check whether a user has relay lists and a fetchable KeyPackage")]
+    Check {
+        #[arg(value_name = "NPUB_OR_HEX", help = "User to check")]
+        pubkey: String,
+    },
+    #[command(about = "Fetch and cache another user's KeyPackage")]
+    Fetch {
+        #[arg(
+            value_name = "NPUB_OR_HEX",
+            help = "User to fetch; defaults to selected account"
+        )]
+        account: Option<String>,
+        #[arg(
+            long,
+            value_name = "URLS",
+            value_delimiter = ',',
+            help = "Comma-separated relays to use for relay-list discovery"
+        )]
+        bootstrap_relays: Vec<String>,
+    },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Subcommand)]
+pub(crate) enum ChatsCommand {
+    #[command(about = "List current chats")]
+    List {
+        #[arg(long, help = "Include archived chats")]
+        include_archived: bool,
+    },
+    #[command(about = "Show one chat")]
+    Show {
+        #[arg(help = "Group id to show")]
+        group: String,
+    },
+    #[command(about = "Subscribe to live chat-list updates through the daemon")]
+    Subscribe,
+    #[command(about = "Archive a chat locally")]
+    Archive {
+        #[arg(help = "Group id to archive")]
+        group: String,
+    },
+    #[command(about = "Unarchive a chat locally")]
+    Unarchive {
+        #[arg(help = "Group id to unarchive")]
+        group: String,
+    },
+    #[command(name = "list-archived", about = "List archived chats")]
+    ListArchived,
+    #[command(
+        name = "subscribe-archived",
+        about = "Subscribe to live archived-chat updates through the daemon"
+    )]
+    SubscribeArchived,
+    #[command(about = "Mute local notifications for a chat")]
+    Mute {
+        #[arg(help = "Group id to mute")]
+        group: String,
+        #[arg(help = "Mute duration: forever, or a number with s/m/h/d/w suffix")]
+        duration: String,
+    },
+    #[command(about = "Unmute local notifications for a chat")]
+    Unmute {
+        #[arg(help = "Group id to unmute")]
+        group: String,
+    },
+    #[command(
+        name = "mark-read",
+        about = "Mark a chat read, clearing its unread count"
+    )]
+    MarkRead {
+        #[arg(help = "Group id to mark read")]
+        group: String,
+        #[arg(help = "Message id to mark read up to; defaults to the newest message")]
+        message_id: Option<String>,
+    },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Subcommand)]
+pub(crate) enum MediaCommand {
+    #[command(about = "Encrypt and upload one or more media files to Blossom")]
+    Upload {
+        #[arg(help = "Group id that owns the media key")]
+        group: String,
+        #[arg(
+            value_name = "FILE_PATH",
+            required = true,
+            help = "Paths to the plaintext media files, sent in this order"
+        )]
+        file_paths: Vec<String>,
+        #[arg(long, help = "Send one kind-9 media message carrying every upload")]
+        send: bool,
+        #[arg(long, help = "Caption to send with --send")]
+        message: Option<String>,
+        #[arg(long, value_name = "MIME", help = "Override MIME type")]
+        media_type: Option<String>,
+        #[arg(
+            long,
+            value_name = "URL",
+            help = "Blossom server URL for upload; defaults to the group's encrypted-media endpoint"
+        )]
+        server: Option<String>,
+    },
+    #[command(about = "Download and decrypt a media file from Blossom")]
+    Download {
+        #[arg(help = "Group id that owns the media key")]
+        group: String,
+        #[arg(help = "Plaintext SHA-256 hash from media list")]
+        file_hash: String,
+        #[arg(
+            long,
+            value_name = "PATH",
+            help = "Output file, or an existing directory; defaults to the original filename in the current directory"
+        )]
+        output: Option<String>,
+    },
+    #[command(about = "List media references for a group")]
+    List {
+        #[arg(help = "Group id to inspect")]
+        group: String,
+    },
+    #[command(about = "Send already-uploaded media references as one ordered kind-9 media message")]
+    Send {
+        #[arg(help = "Group id to send to")]
+        group: String,
+        #[arg(
+            value_name = "ATTACHMENT",
+            required = true,
+            help = "A `media` object from `media upload` JSON, or the plaintext SHA-256 of a projected attachment"
+        )]
+        attachments: Vec<String>,
+        #[arg(long, help = "Caption to send with the attachments")]
+        message: Option<String>,
+    },
+    #[command(
+        name = "set-endpoints",
+        about = "Replace the group's encrypted-media default blob endpoints (admin only)"
+    )]
+    SetEndpoints {
+        #[arg(help = "Group id to update")]
+        group: String,
+        #[arg(value_name = "URL", required = true, help = "Blob endpoint base URLs")]
+        urls: Vec<String>,
+        #[arg(
+            long,
+            value_name = "KIND",
+            default_value = "blossom-v1",
+            help = "Locator kind for every endpoint"
+        )]
+        locator_kind: String,
+    },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Subcommand)]
+pub(crate) enum GroupCommand {
+    Create {
+        name: String,
+        #[arg(value_name = "MEMBER")]
+        members: Vec<String>,
+        #[arg(long)]
+        description: Option<String>,
+    },
+    Members {
+        group: String,
+    },
+    Invite {
+        group: String,
+        #[arg(value_name = "MEMBER", required = true)]
+        members: Vec<String>,
+        #[arg(long = "admin", value_name = "MEMBER")]
+        admins: Vec<String>,
+    },
+    Remove {
+        group: String,
+        #[arg(value_name = "MEMBER", required = true)]
+        members: Vec<String>,
+    },
+    #[command(group = clap::ArgGroup::new("group_update_fields").required(true).multiple(true))]
+    Update {
+        group: String,
+        #[arg(long, group = "group_update_fields")]
+        name: Option<String>,
+        #[arg(long, group = "group_update_fields")]
+        description: Option<String>,
+    },
+    #[command(name = "set-avatar-url")]
+    SetAvatarUrl {
+        group: String,
+        #[arg(long, conflicts_with = "clear", required_unless_present = "clear")]
+        url: Option<String>,
+        #[arg(long, requires = "url")]
+        dim: Option<String>,
+        #[arg(long, requires = "url")]
+        thumbhash: Option<String>,
+        #[arg(long)]
+        clear: bool,
+    },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Subcommand)]
+pub(crate) enum GroupsCommand {
+    #[command(about = "List groups for the selected account")]
+    List,
+    #[command(about = "Create a group and invite members by pubkey")]
+    Create {
+        #[arg(help = "Group display name")]
+        name: String,
+        #[arg(value_name = "MEMBER", help = "Member npub or hex pubkey to add")]
+        members: Vec<String>,
+        #[arg(long, help = "Optional group description")]
+        description: Option<String>,
+        #[arg(
+            long,
+            value_name = "URLS",
+            help = "Comma-separated group routing relays (defaults to app configuration)"
+        )]
+        relays: Option<String>,
+        #[arg(
+            long,
+            value_name = "DURATION",
+            help = "Founding disappearing-message retention: seconds, or a number with s/m/h/d/w suffix; 0 or off disables"
+        )]
+        retention: Option<String>,
+        #[arg(
+            long,
+            value_name = "PATH",
+            help = "Founding encrypted group image file (PNG, JPEG, GIF, or WebP)"
+        )]
+        image: Option<String>,
+        #[arg(
+            long,
+            value_name = "MIME",
+            requires = "image",
+            help = "Override the founding image MIME type"
+        )]
+        image_media_type: Option<String>,
+    },
+    #[command(about = "Show group metadata and membership state")]
+    Show {
+        #[arg(help = "Group id to show")]
+        group_id: String,
+    },
+    #[command(
+        name = "add-members",
+        about = "Add members to a group, optionally granting admin to some invitees in the same commit"
+    )]
+    AddMembers {
+        #[arg(help = "Group id to update")]
+        group_id: String,
+        #[arg(
+            value_name = "MEMBER",
+            required = true,
+            help = "Member npub or hex pubkey to add"
+        )]
+        members: Vec<String>,
+        #[arg(
+            long = "admin",
+            value_name = "MEMBER",
+            help = "Invitee to make an admin in the same invite commit (repeatable)"
+        )]
+        admins: Vec<String>,
+    },
+    #[command(name = "remove-members", about = "Remove members from a group")]
+    RemoveMembers {
+        #[arg(help = "Group id to update")]
+        group_id: String,
+        #[arg(
+            value_name = "MEMBER",
+            required = true,
+            help = "Member npub or hex pubkey to remove"
+        )]
+        members: Vec<String>,
+    },
+    #[command(about = "List group members")]
+    Members {
+        #[arg(help = "Group id to inspect")]
+        group_id: String,
+    },
+    #[command(about = "List group admins")]
+    Admins {
+        #[arg(help = "Group id to inspect")]
+        group_id: String,
+    },
+    #[command(about = "List group relay hints")]
+    Relays {
+        #[arg(help = "Group id to inspect")]
+        group_id: String,
+    },
+    #[command(about = "Leave a group")]
+    Leave {
+        #[arg(help = "Group id to leave")]
+        group_id: String,
+    },
+    #[command(about = "Rename a group")]
+    Rename {
+        #[arg(help = "Group id to rename")]
+        group_id: String,
+        #[arg(help = "New group name")]
+        name: String,
+    },
+    #[command(
+        about = "Update the group name and/or description",
+        group = clap::ArgGroup::new("groups_update_fields").required(true).multiple(true)
+    )]
+    Update {
+        #[arg(help = "Group id to update")]
+        group_id: String,
+        #[arg(long, group = "groups_update_fields", help = "New group name")]
+        name: Option<String>,
+        #[arg(long, group = "groups_update_fields", help = "New group description")]
+        description: Option<String>,
+    },
+    #[command(about = "Show or set the group's disappearing-message retention policy")]
+    Retention {
+        #[arg(help = "Group id to inspect or update")]
+        group_id: String,
+        #[arg(
+            long,
+            value_name = "DURATION",
+            help = "Set the policy: seconds, or a number with s/m/h/d/w suffix; 0 or off disables. Omit to show it"
+        )]
+        set: Option<String>,
+    },
+    #[command(
+        name = "enable-disbanding",
+        about = "Install and require lifecycle-v1 so admins can disband the group"
+    )]
+    EnableDisbanding {
+        #[arg(help = "Group id to update")]
+        group_id: String,
+    },
+    #[command(
+        about = "Durably request an irreversible group disband; completion is observed through disband-status"
+    )]
+    Disband {
+        #[arg(help = "Group id to disband")]
+        group_id: String,
+        #[arg(long, help = "Required safety flag; disbanding cannot be undone")]
+        confirm: bool,
+    },
+    #[command(
+        name = "disband-status",
+        about = "Show the durable disband request, gating, and terminal state for a group"
+    )]
+    DisbandStatus {
+        #[arg(help = "Group id to inspect")]
+        group_id: String,
+    },
+    #[command(
+        name = "acknowledge-disband-failure",
+        about = "Clear a failed disband request after reviewing its failure reason"
+    )]
+    AcknowledgeDisbandFailure {
+        #[arg(help = "Group id whose failed request should be cleared")]
+        group_id: String,
+    },
+    #[command(
+        about = "Show which group-management actions the selected account can take right now"
+    )]
+    Management {
+        #[arg(help = "Group id to inspect")]
+        group_id: String,
+    },
+    #[command(
+        name = "commit-delivery",
+        about = "Show the relays still owed the group's oldest undelivered change, if any"
+    )]
+    CommitDelivery {
+        #[arg(help = "Group id to inspect")]
+        group_id: String,
+    },
+    #[command(
+        name = "recovery-status",
+        about = "Show the durable recovery snapshot and pending rejoin offers for a group"
+    )]
+    RecoveryStatus {
+        #[arg(help = "Group id to inspect")]
+        group_id: String,
+    },
+    #[command(
+        name = "confirm-rejoin",
+        about = "Replace the local group copy with a reviewed rejoin offer; needs the exact offer id and token"
+    )]
+    ConfirmRejoin {
+        #[arg(
+            value_name = "WELCOME_ID",
+            help = "Rejoin offer (Welcome) id from recovery-status"
+        )]
+        welcome_id: String,
+        #[arg(
+            long,
+            value_name = "HEX",
+            help = "The local_state_token shown by recovery-status for that offer"
+        )]
+        local_state_token: String,
+        #[arg(
+            long,
+            help = "Required safety flag; the current local copy is discarded"
+        )]
+        confirm: bool,
+    },
+    #[command(name = "decline-rejoin", about = "Decline a pending rejoin offer")]
+    DeclineRejoin {
+        #[arg(
+            value_name = "WELCOME_ID",
+            help = "Rejoin offer (Welcome) id from recovery-status"
+        )]
+        welcome_id: String,
+    },
+    #[command(about = "List stored groups that failed hydration and were quarantined")]
+    Quarantined,
+    #[command(
+        name = "retry-hydrate",
+        about = "Re-attempt hydration of one quarantined group without discarding state"
+    )]
+    RetryHydrate {
+        #[arg(help = "Quarantined group id to retry")]
+        group_id: String,
+    },
+    #[command(
+        name = "delete-local",
+        about = "Delete this group's local app data without leaving, disbanding, or archiving"
+    )]
+    DeleteLocal {
+        #[arg(help = "Group id whose local data should be deleted")]
+        group_id: String,
+        #[arg(long, help = "Required safety flag before deleting local group data")]
+        confirm: bool,
+    },
+    #[command(
+        name = "set-image",
+        about = "Encrypt, upload, and commit a new group image (PNG, JPEG, GIF, or WebP)"
+    )]
+    SetImage {
+        #[arg(help = "Group id to update")]
+        group_id: String,
+        #[arg(help = "Path to the plaintext image file")]
+        file_path: String,
+        #[arg(long, value_name = "MIME", help = "Override the image MIME type")]
+        media_type: Option<String>,
+    },
+    #[command(name = "clear-image", about = "Remove the encrypted group image")]
+    ClearImage {
+        #[arg(help = "Group id to update")]
+        group_id: String,
+    },
+    #[command(
+        name = "download-image",
+        about = "Download and decrypt the encrypted group image to a file"
+    )]
+    DownloadImage {
+        #[arg(help = "Group id whose image to download")]
+        group_id: String,
+        #[arg(
+            long,
+            value_name = "PATH",
+            help = "Output file, or an existing directory; defaults to group-image.<ext> in the current directory"
+        )]
+        output: Option<String>,
+    },
+    #[command(
+        name = "pending-welcomes",
+        about = "List Welcomes a confirmed create/invite could not deliver yet"
+    )]
+    PendingWelcomes,
+    #[command(
+        name = "redeliver-welcome",
+        about = "Re-publish one undelivered Welcome by its stored message id without re-committing"
+    )]
+    RedeliverWelcome {
+        #[arg(
+            value_name = "MESSAGE_ID",
+            help = "Stored Welcome message id from pending-welcomes"
+        )]
+        message_id: String,
+    },
+    #[command(
+        name = "set-avatar-url",
+        about = "Set, update, or clear the group URL avatar"
+    )]
+    SetAvatarUrl {
+        #[arg(help = "Group id to update")]
+        group_id: String,
+        #[arg(
+            long,
+            conflicts_with = "clear",
+            required_unless_present = "clear",
+            help = "HTTPS avatar URL"
+        )]
+        url: Option<String>,
+        #[arg(long, requires = "url", help = "Optional avatar dimensions as WxH")]
+        dim: Option<String>,
+        #[arg(long, requires = "url", help = "Optional thumbhash hex")]
+        thumbhash: Option<String>,
+        #[arg(long, help = "Clear the group URL avatar")]
+        clear: bool,
+    },
+    #[command(about = "List pending group invites for the selected account")]
+    Invites,
+    #[command(about = "Accept a pending group invite")]
+    Accept {
+        #[arg(help = "Group id to accept")]
+        group_id: String,
+    },
+    #[command(about = "Decline a pending group invite by leaving and archiving it")]
+    Decline {
+        #[arg(help = "Group id to decline")]
+        group_id: String,
+    },
+    #[command(about = "Promote a member to group admin")]
+    Promote {
+        #[arg(help = "Group id to update")]
+        group_id: String,
+        #[arg(help = "Member npub or hex pubkey to promote")]
+        pubkey: String,
+    },
+    #[command(about = "Demote a group admin")]
+    Demote {
+        #[arg(help = "Group id to update")]
+        group_id: String,
+        #[arg(help = "Admin npub or hex pubkey to demote")]
+        pubkey: String,
+    },
+    #[command(name = "self-demote", about = "Demote the selected account from admin")]
+    SelfDemote {
+        #[arg(help = "Group id to update")]
+        group_id: String,
+    },
+    #[command(
+        name = "maintenance-status",
+        about = "Show durable self-update maintenance state for a group"
+    )]
+    MaintenanceStatus {
+        #[arg(help = "Group id to inspect")]
+        group_id: String,
+    },
+    #[command(
+        name = "schedule-self-update",
+        about = "Schedule one manual own-leaf rotation"
+    )]
+    ScheduleSelfUpdate {
+        #[arg(help = "Group id to update")]
+        group_id: String,
+    },
+    #[command(
+        name = "maintenance-policy",
+        about = "Show or configure automatic periodic maintenance for newly enrolled groups"
+    )]
+    MaintenancePolicy {
+        #[arg(
+            long,
+            value_enum,
+            value_name = "enabled|disabled",
+            help = "Set the persisted policy; omit to show it"
+        )]
+        set: Option<MaintenancePolicySetting>,
+    },
+    #[command(
+        name = "pause-maintenance",
+        about = "Pause new maintenance preparations until this runtime resumes"
+    )]
+    PauseMaintenance,
+    #[command(
+        name = "resume-maintenance",
+        about = "Resume maintenance preparations for this runtime"
+    )]
+    ResumeMaintenance,
+    #[command(name = "run-maintenance", about = "Run one due-maintenance pass now")]
+    RunMaintenance,
+    #[command(
+        name = "subscribe-state",
+        about = "Subscribe to live group-state updates through the daemon"
+    )]
+    SubscribeState {
+        #[arg(help = "Group id to watch")]
+        group_id: String,
+    },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Subcommand)]
+pub(crate) enum MessageCommand {
+    #[command(about = "Send a message to a group")]
+    Send {
+        #[arg(long = "group", value_name = "GROUP", help = "Group id to send to")]
+        group_flag: Option<String>,
+        #[arg(
+            long = "reply-to",
+            value_name = "MESSAGE_ID",
+            help = "Send as a reply to this message id (use with --group, before the text)"
+        )]
+        reply_to: Option<String>,
+        #[arg(
+            value_name = "GROUP_OR_TEXT",
+            allow_hyphen_values = true,
+            help = "Either GROUP TEXT... or TEXT... when --group is provided"
+        )]
+        args: Vec<String>,
+    },
+    #[command(
+        about = "Edit one of your own messages by publishing a kind-1009 replacement to the group"
+    )]
+    Edit {
+        #[arg(help = "Group id containing the message")]
+        group_id: String,
+        #[arg(help = "Message id to edit; it must be authored by the selected account")]
+        message_id: String,
+        #[arg(
+            value_name = "TEXT",
+            required = true,
+            allow_hyphen_values = true,
+            help = "Replacement text"
+        )]
+        text: Vec<String>,
+    },
+    #[command(
+        about = "Publish an authenticated delete tombstone (kind 5) for a message to the group"
+    )]
+    Delete {
+        #[arg(help = "Group id containing the message")]
+        group_id: String,
+        #[arg(help = "Message id to delete; recipients hide it, but this is not secure erasure")]
+        message_id: String,
+    },
+    #[command(
+        about = "Retry pending group convergence for a group; retained events are republished, never fresh plaintext"
+    )]
+    Retry {
+        #[arg(help = "Group id whose durable pending work should be retried")]
+        group_id: String,
+        #[arg(
+            help = "Optional event id echoed back for context; the retry is always group-scoped"
+        )]
+        event_id: Option<String>,
+    },
+    #[command(
+        name = "sweep-expired",
+        about = "Run the disappearing-message retention sweep for the selected account using the current clock"
+    )]
+    SweepExpired,
+    #[command(about = "React to a message")]
+    React {
+        #[arg(help = "Group id containing the message")]
+        group_id: String,
+        #[arg(help = "Message id to react to")]
+        message_id: String,
+        #[arg(default_value = "+", help = "Emoji reaction to add")]
+        emoji: String,
+    },
+    #[command(about = "Remove your reaction from a message")]
+    Unreact {
+        #[arg(help = "Group id containing the message")]
+        group_id: String,
+        #[arg(help = "Message id to unreact from")]
+        message_id: String,
+    },
+    #[command(
+        name = "send-event",
+        about = "Send an app-defined custom event with an arbitrary non-reserved kind"
+    )]
+    SendEvent {
+        #[arg(help = "Group id to send to")]
+        group_id: String,
+        #[arg(help = "Inner app-event kind; MDK-reserved kinds are rejected")]
+        kind: u64,
+        #[arg(
+            long = "tag",
+            value_name = "TAG_JSON",
+            help = "Event tag as a JSON array of strings (repeatable), e.g. '[\"e\",\"<id>\"]'"
+        )]
+        tags: Vec<String>,
+        #[arg(
+            value_name = "CONTENT",
+            allow_hyphen_values = true,
+            help = "Event content"
+        )]
+        content: Vec<String>,
+    },
+    #[command(about = "List messages from one group")]
+    List {
+        #[arg(value_name = "GROUP", help = "Group id to list")]
+        group_id: Option<String>,
+        #[arg(long, help = "Group id to list")]
+        group: Option<String>,
+        #[arg(
+            long = "kind",
+            value_name = "KIND",
+            help = "Restrict to this inner app-event kind (repeatable)"
+        )]
+        kinds: Vec<u64>,
+        #[arg(long, help = "Before-cursor timestamp; requires --before-message-id")]
+        before: Option<u64>,
+        #[arg(long, help = "Before-cursor message id; requires --before")]
+        before_message_id: Option<String>,
+        #[arg(long, help = "After-cursor timestamp; requires --after-message-id")]
+        after: Option<u64>,
+        #[arg(long, help = "After-cursor message id; requires --after")]
+        after_message_id: Option<String>,
+        #[arg(long, help = "Maximum number of messages to return")]
+        limit: Option<usize>,
+    },
+    #[command(about = "List, search, and subscribe to the materialized message timeline")]
+    Timeline {
+        #[command(subcommand)]
+        command: MessageTimelineCommand,
+    },
+    #[command(about = "Search messages in one group")]
+    Search {
+        #[arg(help = "Group id to search")]
+        group_id: String,
+        #[arg(help = "Search query")]
+        query: String,
+        #[arg(long, help = "Maximum number of results to return")]
+        limit: Option<usize>,
+    },
+    #[command(name = "search-all", about = "Search messages across all local groups")]
+    SearchAll {
+        #[arg(help = "Search query")]
+        query: String,
+        #[arg(long, help = "Maximum number of results to return")]
+        limit: Option<usize>,
+    },
+    #[command(about = "Subscribe to live message updates through the daemon")]
+    Subscribe {
+        #[arg(help = "Group id to watch; omit to watch all local groups")]
+        group: Option<String>,
+        #[arg(
+            long = "kind",
+            value_name = "KIND",
+            help = "Restrict to this inner app-event kind (repeatable)"
+        )]
+        kinds: Vec<u64>,
+        #[arg(long, help = "Initial replay limit")]
+        limit: Option<usize>,
+    },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Subcommand)]
+pub(crate) enum MessageTimelineCommand {
+    #[command(about = "List materialized timeline messages")]
+    List {
+        #[arg(value_name = "GROUP", help = "Group id to list")]
+        group_id: Option<String>,
+        #[arg(long, help = "Group id to list")]
+        group: Option<String>,
+        #[arg(long, help = "Before-cursor timestamp; requires --before-message-id")]
+        before: Option<u64>,
+        #[arg(long, help = "Before-cursor message id; requires --before")]
+        before_message_id: Option<String>,
+        #[arg(long, help = "After-cursor timestamp; requires --after-message-id")]
+        after: Option<u64>,
+        #[arg(long, help = "After-cursor message id; requires --after")]
+        after_message_id: Option<String>,
+        #[arg(long, help = "Maximum number of timeline rows to return")]
+        limit: Option<usize>,
+    },
+    #[command(about = "Search materialized timeline messages")]
+    Search {
+        #[arg(help = "Search query")]
+        query: String,
+        #[arg(value_name = "GROUP", help = "Optional group id to search")]
+        group_id: Option<String>,
+        #[arg(long, help = "Group id to search")]
+        group: Option<String>,
+        #[arg(long, help = "Maximum number of results to return")]
+        limit: Option<usize>,
+    },
+    #[command(about = "Subscribe to live materialized timeline updates through the daemon")]
+    Subscribe {
+        #[arg(help = "Group id to watch; omit to watch all local groups")]
+        group: Option<String>,
+        #[arg(long, help = "Initial replay limit")]
+        limit: Option<usize>,
+    },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Subcommand)]
+pub(crate) enum FollowsCommand {
+    #[command(about = "List followed users")]
+    List,
+    #[command(about = "Follow a user")]
+    Add {
+        #[arg(value_name = "NPUB_OR_HEX", help = "User to follow")]
+        pubkey: String,
+    },
+    #[command(about = "Unfollow a user")]
+    Remove {
+        #[arg(value_name = "NPUB_OR_HEX", help = "User to unfollow")]
+        pubkey: String,
+    },
+    #[command(about = "Check whether a user is followed")]
+    Check {
+        #[arg(value_name = "NPUB_OR_HEX", help = "User to check")]
+        pubkey: String,
+    },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Subcommand)]
+pub(crate) enum ProfileCommand {
+    #[command(about = "Show the selected account Nostr profile")]
+    Show,
+    #[command(about = "Update and publish the selected account Nostr profile")]
+    Update {
+        #[arg(long, help = "Set the short profile name")]
+        name: Option<String>,
+        #[arg(long, help = "Set the display name")]
+        display_name: Option<String>,
+        #[arg(long, help = "Set the profile bio")]
+        about: Option<String>,
+        #[arg(long, help = "Set the profile picture URL")]
+        picture: Option<String>,
+        #[arg(long, help = "Set the NIP-05 identifier")]
+        nip05: Option<String>,
+        #[arg(long, help = "Set the Lightning address")]
+        lud16: Option<String>,
+    },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Subcommand)]
+pub(crate) enum RelaysCommand {
+    #[command(about = "List account relay URLs")]
+    List {
+        #[arg(
+            long = "type",
+            value_name = "TYPE",
+            help = "Relay list type: nip65 or inbox"
+        )]
+        relay_type: Option<String>,
+    },
+    #[command(about = "Add a relay URL to an account relay list")]
+    Add {
+        #[arg(help = "Relay URL to add")]
+        url: String,
+        #[arg(
+            long = "type",
+            value_name = "TYPE",
+            help = "Relay list type: nip65 or inbox"
+        )]
+        relay_type: String,
+    },
+    #[command(about = "Remove a relay URL from an account relay list")]
+    Remove {
+        #[arg(help = "Relay URL to remove")]
+        url: String,
+        #[arg(
+            long = "type",
+            value_name = "TYPE",
+            help = "Relay list type: nip65 or inbox"
+        )]
+        relay_type: String,
+    },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Subcommand)]
+pub(crate) enum SettingsCommand {
+    #[command(about = "Show local CLI settings")]
+    Show,
+    #[command(about = "Set the local TUI theme")]
+    Theme {
+        #[arg(help = "Theme mode such as system, light, or dark")]
+        mode: String,
+    },
+    #[command(about = "Set the local UI language")]
+    Language {
+        #[arg(help = "Language tag such as en")]
+        lang: String,
+    },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Subcommand)]
+pub(crate) enum UsersCommand {
+    #[command(about = "Show a known user from the local directory")]
+    Show {
+        #[arg(value_name = "NPUB_OR_HEX", help = "User to show")]
+        pubkey: String,
+    },
+    #[command(about = "Search users across your follow graph")]
+    Search {
+        #[arg(help = "Search query")]
+        query: String,
+        #[arg(
+            long,
+            default_value = "0..1",
+            value_parser = parse_radius,
+            help = "Follow-graph radius as START..END (0 is you, 1 who you follow, 2 follows-of-follows)"
+        )]
+        radius: (u8, u8),
+    },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Subcommand)]
+pub(crate) enum NotificationsCommand {
+    #[command(about = "Subscribe to notification updates")]
+    Subscribe,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Subcommand)]
+pub(crate) enum StreamCommand {
+    #[command(about = "Anchor a durable agent text stream start over the MLS message path")]
+    Start {
+        #[arg(help = "Group id to anchor the stream in")]
+        group: String,
+        #[arg(long, value_name = "HEX", help = "Optional stream id to use")]
+        stream_id: Option<String>,
+        #[arg(
+            long = "quic-candidate",
+            value_name = "ADDR",
+            help = "QUIC candidate URI such as quic://127.0.0.1:4450"
+        )]
+        quic_candidates: Vec<String>,
+    },
+    #[command(about = "Receive one provisional QUIC agent text stream")]
+    Receive {
+        #[arg(
+            long,
+            default_value = "127.0.0.1:4450",
+            value_name = "ADDR",
+            help = "Local address to bind"
+        )]
+        bind: SocketAddr,
+        #[arg(long, value_name = "HEX", help = "Expected stream-start event id")]
+        start_event_id: Option<String>,
+    },
+    #[command(about = "Send one provisional QUIC agent text stream")]
+    Send {
+        #[arg(
+            long,
+            help = "Use the broker protocol instead of direct QUIC stream receive"
+        )]
+        broker: bool,
+        #[arg(long, value_name = "ADDR", help = "Remote QUIC address")]
+        connect: SocketAddr,
+        #[arg(
+            long,
+            default_value = "localhost",
+            value_name = "NAME",
+            help = "TLS server name"
+        )]
+        server_name: String,
+        #[arg(
+            long,
+            value_name = "HEX",
+            help = "Pinned server certificate DER bytes as hex"
+        )]
+        server_cert_der_hex: Option<String>,
+        #[arg(long, help = "Trust loopback QUIC certificates for local testing")]
+        insecure_local: bool,
+        #[arg(long, value_name = "HEX", help = "Optional stream id to use")]
+        stream_id: Option<String>,
+        #[arg(long, value_name = "HEX", help = "Expected stream-start event id")]
+        start_event_id: Option<String>,
+        #[arg(
+            long,
+            default_value_t = 1024,
+            value_name = "BYTES",
+            help = "Maximum bytes per streamed chunk"
+        )]
+        chunk_bytes: usize,
+        #[arg(
+            long,
+            default_value_t = 0,
+            value_name = "MILLIS",
+            help = "Delay between streamed chunks"
+        )]
+        chunk_delay_ms: u64,
+        #[arg(
+            value_name = "TEXT",
+            required = true,
+            allow_hyphen_values = true,
+            help = "Text to stream"
+        )]
+        text: Vec<String>,
+    },
+    #[command(about = "Watch one brokered QUIC agent text stream from a durable MLS start payload")]
+    Watch {
+        #[arg(help = "Group id containing the stream start")]
+        group: String,
+        #[arg(long, value_name = "HEX", help = "Stream id to watch")]
+        stream_id: Option<String>,
+        #[arg(
+            long,
+            value_name = "HEX",
+            help = "Pinned server certificate DER bytes as hex"
+        )]
+        server_cert_der_hex: Option<String>,
+        #[arg(long, help = "Trust loopback QUIC certificates for local testing")]
+        insecure_local: bool,
+        #[arg(
+            long,
+            help = "Register the watch with the daemon and return immediately"
+        )]
+        background: bool,
+    },
+    #[command(about = "Open a daemon-owned live stream compose session")]
+    ComposeOpen {
+        #[arg(help = "Group id that will receive the stream anchor and final message")]
+        group: String,
+        #[arg(long, value_name = "HEX", help = "Stream id to use")]
+        stream_id: Option<String>,
+        #[arg(
+            long = "quic-candidate",
+            value_name = "ADDR",
+            help = "Broker candidate to advertise, e.g. quic://host:port"
+        )]
+        quic_candidates: Vec<String>,
+        #[arg(
+            long,
+            help = "Trust loopback QUIC broker certificates for local testing"
+        )]
+        insecure_local: bool,
+        #[arg(
+            long,
+            default_value_t = 32,
+            value_name = "BYTES",
+            help = "Maximum bytes per streamed preview chunk"
+        )]
+        chunk_bytes: usize,
+    },
+    #[command(about = "Append text to an active daemon stream compose session")]
+    ComposeAppend {
+        #[arg(long, value_name = "HEX", help = "Stream id to append to")]
+        stream_id: String,
+        #[arg(
+            value_name = "TEXT",
+            required = true,
+            allow_hyphen_values = true,
+            help = "Text to append"
+        )]
+        text: Vec<String>,
+    },
+    #[command(
+        about = "Finish a daemon stream compose session and publish the durable final message"
+    )]
+    ComposeFinish {
+        #[arg(long, value_name = "HEX", help = "Stream id to finish")]
+        stream_id: String,
+    },
+    #[command(about = "Cancel a daemon stream compose session")]
+    ComposeCancel {
+        #[arg(long, value_name = "HEX", help = "Stream id to cancel")]
+        stream_id: String,
+    },
+    #[command(about = "Commit the final agent text stream transcript over the MLS message path")]
+    Finish {
+        #[arg(help = "Group id containing the stream")]
+        group: String,
+        #[arg(long, value_name = "HEX", help = "Stream id to finish")]
+        stream_id: String,
+        #[arg(long, value_name = "HEX", help = "Stream-start message id")]
+        start_event_id: String,
+        #[arg(long, value_name = "HEX", help = "Final transcript hash")]
+        transcript_hash: String,
+        #[arg(long, help = "Number of streamed chunks")]
+        chunk_count: u64,
+        #[arg(
+            value_name = "TEXT",
+            required = true,
+            allow_hyphen_values = true,
+            help = "Final text"
+        )]
+        text: Vec<String>,
+    },
+    #[command(about = "Verify a local QUIC transcript against the durable MLS final payload")]
+    Verify {
+        #[arg(help = "Group id containing the stream")]
+        group: String,
+        #[arg(long, value_name = "HEX", help = "Stream id to verify")]
+        stream_id: String,
+        #[arg(long, value_name = "HEX", help = "Expected transcript hash")]
+        transcript_hash: String,
+        #[arg(long, help = "Expected streamed chunk count")]
+        chunk_count: Option<u64>,
+    },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Subcommand)]
+pub(crate) enum DaemonCommand {
+    #[command(about = "Start wnd in the background")]
+    Start {
+        #[arg(
+            long,
+            value_name = "PATH",
+            help = "Use this White Noise data directory (alias for --home)"
+        )]
+        data_dir: Option<PathBuf>,
+        #[arg(
+            long,
+            value_name = "URLS",
+            value_delimiter = ',',
+            help = "Comma-separated discovery relays for profiles, relay lists, and KeyPackages"
+        )]
+        discovery_relays: Vec<String>,
+        #[arg(
+            long,
+            value_name = "URLS",
+            value_delimiter = ',',
+            help = "Comma-separated default account relays used when creating identities"
+        )]
+        default_account_relays: Vec<String>,
+        #[arg(
+            long,
+            value_name = "PATH",
+            help = "Write daemon logs in this directory"
+        )]
+        logs_dir: Option<PathBuf>,
+    },
+    #[command(about = "Stop the background wnd daemon")]
+    Stop,
+    #[command(about = "Show daemon status, relay health, and stream watches")]
+    Status,
+}
+
+pub(crate) fn parse_radius(s: &str) -> Result<(u8, u8), String> {
+    let Some((start, end)) = s.split_once("..") else {
+        return Err("expected format START..END".to_owned());
+    };
+    let start = start
+        .parse::<u8>()
+        .map_err(|_| format!("invalid radius start: {start}"))?;
+    let end = end
+        .parse::<u8>()
+        .map_err(|_| format!("invalid radius end: {end}"))?;
+    if start > end {
+        return Err(format!("radius start ({start}) must be <= end ({end})"));
+    }
+    Ok((start, end))
+}
+
+#[derive(Clone, Debug, clap::Subcommand, serde::Serialize, serde::Deserialize)]
+pub(crate) enum UsageDiagnosticsCommand {
+    Show,
+    Enable,
+    Disable,
+}

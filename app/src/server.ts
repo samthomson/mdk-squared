@@ -95,8 +95,10 @@ export function buildServer (deps: ServerDeps): FastifyInstance {
           devices.telemetry(spec.deviceId).catch(() => ({})),
           devices.health(spec.deviceId).catch(() => null)
         ])
+        const nicknames = store.readJson<Record<string, string>>('nicknames.json', {})
         return {
           id: spec.deviceId,
+          nickname: nicknames[spec.deviceId] ?? null,
           mock: !cfg.realDevices,
           telemetry,
           health,
@@ -107,6 +109,18 @@ export function buildServer (deps: ServerDeps): FastifyInstance {
     return { workerCount: workers.length, workers, devices: perDevice }
   })
 
+  app.put('/api/devices/:id/name', async (req: FastifyRequest, reply: FastifyReply) => {
+    const { id } = req.params as { id: string }
+    if (!devices.specs.some((s) => s.deviceId === id)) return reply.code(404).send({ error: 'ERR_UNKNOWN_DEVICE' })
+    const { nickname } = req.body as { nickname?: string }
+    const clean = (nickname ?? '').trim().slice(0, 30)
+    const nicknames = store.readJson<Record<string, string>>('nicknames.json', {})
+    if (clean) nicknames[id] = clean
+    else delete nicknames[id]
+    store.writeJson('nicknames.json', nicknames)
+    store.record('system', `nickname ${id} → ${clean || '(cleared)'}`)
+    return { id, nickname: clean || null }
+  })
   const runCommand = async (deviceId: string, command: string, params: Record<string, unknown>, reply: FastifyReply): Promise<CommandOutcome | FastifyReply> => {
     if (!devices.specs.some((s) => s.deviceId === deviceId)) {
       return reply.code(404).send({ error: 'ERR_UNKNOWN_DEVICE', deviceId })
@@ -166,7 +180,7 @@ export function buildServer (deps: ServerDeps): FastifyInstance {
 
   app.put('/api/autopilot', async (req: FastifyRequest) => {
     const patch = req.body as Record<string, unknown>
-    const allowed: Record<string, true> = { enabled: true, onUgm3: true, offUgm3: true, idleMode: true, stations: true }
+    const allowed: Record<string, true> = { enabled: true, onUgm3: true, offUgm3: true, idleMode: true, overrideValue: true, stations: true }
     const filtered = Object.fromEntries(Object.entries(patch).filter(([k]) => allowed[k]))
     const status = autopilot.update(filtered)
     store.record('autopilot', 'config updated', status.config)

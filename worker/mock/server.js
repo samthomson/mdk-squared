@@ -15,7 +15,8 @@
 // { type } injects faults (overheat, fan_stuck), POST /mock/fault { type: 'clear' }.
 
 const http = require('http')
-const debug = require('debug')('mdk:worker:bitair:mock')
+// No dependencies: the mock must run inside bare containers.
+const debug = () => {}
 
 const POWER_MODES = {
   off: { power: 0.04, hashrate: 0, fanPct: 0 },

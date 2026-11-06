@@ -32,7 +32,8 @@ async function main (): Promise<void> {
     onUgm3: cfg.autopilotOnUgm3,
     offUgm3: cfg.autopilotOffUgm3,
     idleMode: cfg.autopilotIdleMode,
-    stations: []
+    stations: [],
+    overrideValue: null
   })
   const schedules = new ScheduleRunner(devices, store)
 

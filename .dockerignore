@@ -1,0 +1,12 @@
+.git
+node_modules
+**/node_modules
+**/dist
+data
+data-*
+.env
+*.log
+.DS_Store
+app/.test-admin-sk.hex
+app/.test-token
+app/.seed-station-sk

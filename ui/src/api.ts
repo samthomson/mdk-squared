@@ -78,6 +78,7 @@ export class Api {
     return body
   }
 
+  rename (id: string, nickname: string) { return this.call(`/api/devices/${id}/name`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ nickname }) }) }
   me (): Promise<Me> { return this.call('/api/me') as Promise<Me> }
   simulate (value: number) { return this.call('/api/autopilot/simulate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ value }) }) }
   pauseAutopilot () { return this.call('/api/autopilot/pause', { method: 'POST' }) }

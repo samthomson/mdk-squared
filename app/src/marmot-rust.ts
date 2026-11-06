@@ -58,6 +58,7 @@ async function runWn (args: string[], env: Record<string, string>, cwd?: string)
 }
 
 export async function createRustMarmotBridge (deps: MarmotDeps): Promise<MarmotBridge> {
+  if (!(await wnAvailable())) throw new Error('ERR_WN_NOT_INSTALLED: falling back to marmot-ts')
   const home = path.join(deps.dataDir, 'wn-home')
   const env: Record<string, string> = {
     WN_HOME: home,
@@ -77,6 +78,7 @@ export async function createRustMarmotBridge (deps: MarmotDeps): Promise<MarmotB
     '--default-account-relays', deps.relays[0] ?? 'wss://relay.primal.net',
     ...deps.relays.slice(1).flatMap((r) => ['--default-account-relays', r])
   ], { env: { ...process.env, ...env }, stdio: 'ignore' })
+  daemon.on('error', (err) => deps.store.record('marmot', `wn daemon failed: ${err.message}`))
   // 2. Identity: create once; the account lives in WN_HOME across restarts.
   const accountsRaw = await runWn(['accounts', 'list', '--json'], env) as unknown
   const accounts = (Array.isArray(accountsRaw) ? accountsRaw : (accountsRaw as { accounts?: unknown[] })?.accounts ?? []) as Array<{ npub?: string, account_id?: string }>
@@ -154,12 +156,12 @@ export async function createRustMarmotBridge (deps: MarmotDeps): Promise<MarmotB
     }
     if (parsed.name === 'toggleAuto') {
       await deps.setAutopilot({ enabled: true })
-      await send('🤖 autopilot ON — resumes control now')
+      await send('🤖 auto ON')
       return
     }
     if (parsed.name === 'toggleManual') {
-      await deps.setAutopilot({ __pause: true })
-      await send('✋ manual mode — autopilot paused 30 min (your /mode commands are in charge)')
+      await deps.setAutopilot({ enabled: false })
+      await send('✋ manual mode — you control the devices')
       return
     }
     if (parsed.name === 'help') {
