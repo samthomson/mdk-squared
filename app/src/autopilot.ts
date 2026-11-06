@@ -112,6 +112,8 @@ export class Autopilot {
       seen.add(ev.pubkey)
       const sensors = ev.tags.filter(([k]) => k === 'sensor')
       if (!sensors.some(([, v]) => v === 'pm25')) continue
+      // Test-debris demo stations (published from scratch data dirs) stay hidden.
+      if ((ev.tags.find(([k]) => k === 'name')?.[1] ?? '').startsWith('mdk² demo')) continue
       stations.push({
         pubkey: ev.pubkey,
         npub: nip19.npubEncode(ev.pubkey),

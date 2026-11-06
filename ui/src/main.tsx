@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react'
+import { nip19 } from 'nostr-tools'
 import { createRoot } from 'react-dom/client'
 import { Api, nip98Login, type DeviceStatus, type AutopilotStatus, type StationInfo, type Me } from './api'
 import './styles.css'
@@ -168,41 +169,77 @@ function EventLog ({ events }: { events: Array<{ ts: number, kind: string, messa
 
 function MarmotPanel ({ status, api, me, onChanged }: { status: Record<string, unknown> | null, api: Api, me: Me, onChanged: () => void }) {
   const [npub, setNpub] = useState('')
-  const [members, setMembers] = useState<Array<{ npub: string }>>([])
+  const [allowlist, setAllowlist] = useState<Array<{ npub: string }>>([])
   if (!status) return null
   const joined = Boolean(status.groupJoined)
+  const groupMembers = (status.members as string[] | undefined) ?? []
+  const botNpub = String(status.npub ?? '')
+  const adminNpub = me.isAdmin ? me.npub : null
+
+  const row = (pubkeyOrNpub: string, tag: string) => {
+    let npubStr = pubkeyOrNpub
+    try {
+      if (!pubkeyOrNpub.startsWith('npub1')) npubStr = nip19.npubEncode(pubkeyOrNpub)
+    } catch { /* show raw */ }
+    const isMe = npubStr === me.npub
+    return (
+      <div className={`stationrow${isMe ? ' sel' : ''}`} key={pubkeyOrNpub}>
+        <span className="stationname">
+          {isMe ? 'you' : short(npubStr)}
+          {tag ? <span className="muted"> · {tag}</span> : null}
+        </span>
+        <span className="stationval">{npubStr.slice(0, 20)}…</span>
+      </div>
+    )
+  }
 
   return (
     <div className="card">
       <h3>Marmot group <span className={`badge ${joined ? 'on' : 'off'}`}>{joined ? 'joined' : 'awaiting invite'}</span></h3>
-      <div className="muted" style={{ marginTop: 8 }}>
-        {status.npub
+      <div className="muted" style={{ marginTop: 8, marginBottom: 10 }}>
+        {botNpub
           ? (joined
-              ? <>Members of this MLS group can sign in and control the fleet. Members: {String(status.members?.length ?? 0)}. Say <code>!air status</code> in the group chat.</>
-              : <>Invite this npub into your Marmot (White Noise/darkmatter) group: <code style={{ color: 'var(--accent)' }}>{String(status.npub)}</code></>)
-          : <>Marmot disabled — set <code>MARMOT_ENABLED=true</code> to let an MLS group be the access list.</>}
+              ? <>Everyone below can sign in here and control the fleet. Add people with <code>/invite npub1…</code> in the group chat.</>
+              : <>Invite this npub into your Marmot (White Noise) group: <code style={{ color: 'var(--accent)' }}>{botNpub}</code></>)
+          : <>Marmot disabled — set <code>MARMOT_ENABLED=true</code>.</>}
       </div>
+
+      {botNpub && (
+        <>
+          <div className="muted" style={{ fontSize: 11, marginBottom: 4 }}>group members ({groupMembers.length + 1})</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 3, marginBottom: 12 }}>
+            {row(botNpub, 'mdk² bot')}
+            {groupMembers.map((m) => row(m, m === adminNpub || nip19Encode(m) === adminNpub ? 'admin' : ''))}
+          </div>
+        </>
+      )}
+
       {me.isAdmin && (
-        <div className="row" style={{ marginTop: 12 }}>
-          <input type="text" style={{ width: 320 }} placeholder="npub1… to allowlist without Marmot" value={npub} onChange={(e) => setNpub(e.target.value)} />
-          <button
-            className="small"
-            onClick={async () => {
-              if (!npub) return
-              await api.addMember(npub)
-              setNpub('')
-              const m = await api.members()
-              setMembers(m.members)
-              onChanged()
-            }}
-          >
-            allow
-          </button>
-          <button className="small" onClick={async () => setMembers((await api.members()).members)}>list</button>
-        </div>
+        <>
+          <div className="muted" style={{ fontSize: 11, marginBottom: 4 }}>allowlist — login without group ({allowlist.length})</div>
+          <div className="row" style={{ marginBottom: 6 }}>
+            <input type="text" style={{ width: 320 }} placeholder="npub1… to allow login without the group" value={npub} onChange={(e) => setNpub(e.target.value)} />
+            <button
+              className="small"
+              onClick={async () => {
+                if (!npub) return
+                await api.addMember(npub)
+                setNpub('')
+                setAllowlist((await api.members()).members)
+                onChanged()
+              }}
+            >allow</button>
+            <button className="small" onClick={async () => setAllowlist((await api.members()).members)}>refresh</button>
+          </div>
+          {allowlist.map((m) => row(m.npub, 'allowlist'))}
+        </>
       )}
     </div>
   )
+}
+
+function nip19Encode (hex: string): string {
+  try { return nip19.npubEncode(hex) } catch { return hex }
 }
 
 function ago (at: number): string {
@@ -344,19 +381,19 @@ function Dashboard ({ api, me }: { api: Api, me: Me }) {
                 </div>
                 {autopilot.config.onUgm3 <= autopilot.config.offUgm3 && <div className="mode-error">purify must be above idle</div>}
                 <div className="field">value source
-                  <label className="stationrow">
-                    <input type="radio" name="valsrc" checked={autopilot.config.overrideValue === null}
-                      onChange={() => { void api.updateAutopilot({ overrideValue: null }).then(refresh) }} />
-                    <span className="stationname">station value</span>
-                  </label>
-                  <label className="stationrow">
-                    <input type="radio" name="valsrc" checked={autopilot.config.overrideValue !== null}
-                      onChange={() => { void api.updateAutopilot({ overrideValue: autopilot.config.overrideValue ?? 45 }).then(refresh) }} />
-                    <span className="stationname">override</span>
-                    <input type="number" style={{ width: 64 }} defaultValue={autopilot.config.overrideValue ?? 45}
-                      onBlur={(e) => { const v = Number(e.target.value); if (Number.isFinite(v)) void api.updateAutopilot({ overrideValue: v }).then(refresh) }} />
-                    <span className="muted">µg/m³</span>
-                  </label>
+                  {(() => {
+                    const ov = autopilot.config.overrideValue
+                    const high = autopilot.config.onUgm3 + 10
+                    const low = Math.max(0, autopilot.config.offUgm3 - 10)
+                    const pick = (v: number | null) => () => { void api.updateAutopilot({ overrideValue: v }).then(refresh) }
+                    return (
+                      <div className="row">
+                        <button className={ov === null ? 'active small' : 'small'} onClick={pick(null)}>station</button>
+                        <button className={ov === low ? 'active small' : 'small'} onClick={pick(low)}>force low ({low})</button>
+                        <button className={ov === high ? 'active small' : 'small'} onClick={pick(high)}>force high ({high})</button>
+                      </div>
+                    )
+                  })()}
                 </div>
               </div>
             </div>

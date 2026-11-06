@@ -222,7 +222,7 @@ export async function createRustMarmotBridge (deps: MarmotDeps): Promise<MarmotB
           const lines = fleet.devices.map((d) => `${d.id}: ${String(d.telemetry.power_mode ?? '?')} · ${Number(d.telemetry.pm25_ugm3 ?? 0).toFixed(1)} µg/m³ · ${Number(d.telemetry.hashrate_ghs ?? 0).toFixed(0)} GH/s`)
           await send(
             `🔄 mdk² restarted — this is the live group.\n${lines.join('\n')}\n` +
-            'commands: !air status · !air on high|eco|low|off · !air fan 80 · !air mining off · !air reboot BA-001 · !air invite npub1…'
+            'say /help for commands'
           )
         }
         const membersResult = await runWn(scoped(['groups', 'members', groupHex, '--json']), env) as unknown
