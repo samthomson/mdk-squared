@@ -57,7 +57,9 @@ export class Authz {
         return { allowed: false, source: null }
       }
     }
-    if (this.allowlist.some((m) => m.npub === pubkeyOrNpub || m.npub === hex)) {
+    // Stored members are npubs; the caller passes hex — compare in hex.
+    const memberHexes = this.allowlist.map((m) => (m.npub.startsWith('npub1') ? String(nip19.decode(m.npub).data) : m.npub))
+    if (memberHexes.includes(hex)) {
       return { allowed: true, source: 'allowlist' }
     }
     if (this.marmotMembers.has(hex)) return { allowed: true, source: 'marmot' }

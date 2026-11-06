@@ -52,9 +52,14 @@ async function main (): Promise<void> {
         id: spec.deviceId,
         telemetry: await devices.telemetry(spec.deviceId).catch(() => ({})) as Record<string, unknown>
       })))
-    })
+    }),
+    autopilotStatus: () => autopilot.status(),
+    setAutopilot: async (patch: Record<string, unknown>) => {
+      if (patch.__pause === true) { autopilot.manualOverride(); return autopilot.status() }
+      const { __pause, ...rest } = patch
+      return autopilot.update(rest)
+    }
   }
-
   let marmot: MarmotBridge | null = null
   if (cfg.marmotEnabled) {
     // Engine choice: the Rust wn CLI (White Noise's own engine — invites

@@ -68,10 +68,12 @@ export async function createRustMarmotBridge (deps: MarmotDeps): Promise<MarmotB
   // 1. Daemon: keeps the account synced and receives Welcomes live.
   // The daemon's discovery relay becomes the GROUP's message relays — use a
   // full relay from RELAYS, never a directory relay like purplepag.es
-  // (it rejects kind 445 group messages).
+  // (it rejects kind 445 group messages). purplepag.es still joins discovery
+  // so the directory can resolve accounts whose lists live only there.
+  const discovery = [deps.relays[0] ?? 'wss://relay.primal.net', 'wss://purplepag.es'].join(',')
   const daemon = spawn('wn', [
     'daemon', 'start',
-    '--discovery-relays', deps.relays[0] ?? 'wss://relay.primal.net',
+    '--discovery-relays', discovery,
     '--default-account-relays', deps.relays[0] ?? 'wss://relay.primal.net',
     ...deps.relays.slice(1).flatMap((r) => ['--default-account-relays', r])
   ], { env: { ...process.env, ...env }, stdio: 'ignore' })
@@ -100,13 +102,16 @@ export async function createRustMarmotBridge (deps: MarmotDeps): Promise<MarmotB
   let lastForwardAt = 0
 
   const send = async (text: string): Promise<void> => {
-    if (!groupHex) return
     try {
-      await runWn(scoped(['messages', 'send', groupHex, text, '--json']), env)
+      // --json up front: trailing flags get parsed as message text.
+      await runWn(['--json', ...scoped(['messages', 'send', groupHex ?? '', text])], env)
     } catch (err) {
       deps.store.record('marmot', `reply failed: ${(err as Error).message}`)
     }
   }
+
+  const deviceLine = (d: { id: string, telemetry: Record<string, unknown> }) =>
+    `${d.id}: ${String(d.telemetry.power_mode ?? '?')} · ${Number(d.telemetry.pm25_ugm3 ?? 0).toFixed(1)} µg/m³ · ${(Number(d.telemetry.hashrate_ghs ?? 0) / 1000).toFixed(2)} TH/s · ${Number(d.telemetry.temp_c ?? 0).toFixed(0)}°C`
 
   const handleCommand = async (senderNpub: string, text: string): Promise<void> => {
     const parsed = parseAirCommand(text)
@@ -115,15 +120,64 @@ export async function createRustMarmotBridge (deps: MarmotDeps): Promise<MarmotB
       await send(`⚠️ ${parsed.error}`)
       return
     }
+
     if (parsed.name === 'status') {
       const fleet = await deps.fleetStatus()
-      const lines = fleet.devices.map((d) => `${d.id}: ${String(d.telemetry.power_mode ?? '?')} · ${Number(d.telemetry.pm25_ugm3 ?? 0).toFixed(1)} µg/m³ · ${Number(d.telemetry.hashrate_ghs ?? 0).toFixed(0)} GH/s`)
-      await send(`🌬️ mdk² fleet:\n${lines.join('\n')}`)
+      const auto = deps.autopilotStatus() as { engaged?: boolean, config?: { enabled?: boolean }, overrideUntil?: number | null }
+      const mean = fleet.devices.length > 0 ? fleet.devices.reduce((s, d) => s + Number(d.telemetry.pm25_ugm3 ?? 0), 0) / fleet.devices.length : 0
+      const hash = fleet.devices.reduce((s, d) => s + Number(d.telemetry.hashrate_ghs ?? 0), 0) / 1000
+      const autoState = !auto?.config?.enabled ? 'off' : auto.engaged ? 'PURIFYING (high)' : (auto.overrideUntil && auto.overrideUntil > Date.now()) ? 'paused (manual)' : 'monitoring'
+      await send(
+        `📊 mdk² status\n` +
+        `• air: ${mean.toFixed(1)} µg/m³ (fleet mean)\n` +
+        `• auto: ${autoState}\n` +
+        `• ${fleet.devices.length} devices · ${hash.toFixed(2)} TH/s total`
+      )
+      return
+    }
+    if (parsed.name === 'devices') {
+      const fleet = await deps.fleetStatus()
+      await send(`⛏ devices\n${fleet.devices.map((d) => '• ' + deviceLine(d)).join('\n')}`)
+      return
+    }
+    if (parsed.name === 'auto') {
+      const auto = deps.autopilotStatus() as { engaged?: boolean, overrideUntil?: number | null, config?: { enabled?: boolean, onUgm3?: number, offUgm3?: number, idleMode?: string, stations?: string[] }, readings?: Array<{ station: string, value: number, at: number }> }
+      if (!auto?.config) { await send('⚠️ autopilot state unavailable'); return }
+      const lines = [
+        `• state: ${!auto.config.enabled ? 'off' : auto.engaged ? 'PURIFYING (high)' : (auto.overrideUntil && auto.overrideUntil > Date.now()) ? 'paused (manual override)' : 'monitoring'}`,
+        `• stations: ${auto.config.stations?.length ?? 0} watched`,
+        ...(auto.readings ?? []).map((r) => `• latest: ${r.value.toFixed(1)} µg/m³ @ ${r.station.slice(0, 8)}…`),
+        `• purify above ${auto.config.onUgm3} · idle below ${auto.config.offUgm3} at ${auto.config.idleMode}`
+      ]
+      await send(`🤖 autopilot\n${lines.join('\n')}`)
+      return
+    }
+    if (parsed.name === 'toggleAuto') {
+      await deps.setAutopilot({ enabled: true })
+      await send('🤖 autopilot ON — resumes control now')
+      return
+    }
+    if (parsed.name === 'toggleManual') {
+      await deps.setAutopilot({ __pause: true })
+      await send('✋ manual mode — autopilot paused 30 min (your /mode commands are in charge)')
+      return
+    }
+    if (parsed.name === 'help') {
+      await send(
+        'mdk² commands\n' +
+        '• /status — one-glance summary\n' +
+        '• /devices — every miner, state and telemetry\n' +
+        '• /auto — autopilot: state, stations, pm2.5, thresholds\n' +
+        '• /toggle auto | /toggle manual\n' +
+        '• /mode <off|eco|low|high> [BA-001] — override\n' +
+        '• /fan <0-100> [id] · /mining on|off [id] · /reboot BA-001\n' +
+        '• /invite npub1… — add a controller'
+      )
       return
     }
     if (parsed.name === 'invite') {
       const npub = String(parsed.params.npub ?? '')
-      if (!npub.startsWith('npub1')) { await send('⚠️ invite needs an npub: !air invite npub1…'); return }
+      if (!npub.startsWith('npub1')) { await send('⚠️ usage: /invite npub1…'); return }
       if (!groupHex) { await send('⚠️ no group yet'); return }
       await runWn(scoped(['groups', 'add-members', groupHex, npub, '--json']), env)
       await send(`✅ invited ${npub.slice(0, 20)}… — they now control the fleet too`)
@@ -131,7 +185,9 @@ export async function createRustMarmotBridge (deps: MarmotDeps): Promise<MarmotB
     }
     deps.store.record('marmot', `chat command from ${senderNpub.slice(0, 12)}…: ${text}`)
     const outcome = await deps.onCommand(parsed)
-    await send(`✅ ${text.trim()} → ${JSON.stringify(outcome)}`)
+    const results = Array.isArray(outcome) ? outcome as Array<{ status?: string }> : [outcome as { status?: string }]
+    const ok = results.every((r) => r?.status === 'SUCCESS')
+    await send(ok ? `✅ done: ${text.trim()}` : `⚠️ ${text.trim()} → ${JSON.stringify(outcome).slice(0, 200)}`)
   }
 
   const poll = async (): Promise<void> => {
@@ -156,10 +212,16 @@ export async function createRustMarmotBridge (deps: MarmotDeps): Promise<MarmotB
 
 
       if (groupHex) {
-        // Announce once when the bot first lands in a group.
+        // Announce on every boot: identifies the live group after restarts
+        // and carries a fleet summary + the command list.
         if (!announced) {
           announced = true
-          await send('🌬️ mdk² online — commands: !air status · !air on high|eco|low|off · !air fan 80 · !air mining off · !air reboot BA-001 · !air invite npub1…')
+          const fleet = await deps.fleetStatus().catch(() => ({ devices: [] as Array<{ id: string, telemetry: Record<string, unknown> }> }))
+          const lines = fleet.devices.map((d) => `${d.id}: ${String(d.telemetry.power_mode ?? '?')} · ${Number(d.telemetry.pm25_ugm3 ?? 0).toFixed(1)} µg/m³ · ${Number(d.telemetry.hashrate_ghs ?? 0).toFixed(0)} GH/s`)
+          await send(
+            `🔄 mdk² restarted — this is the live group.\n${lines.join('\n')}\n` +
+            'commands: !air status · !air on high|eco|low|off · !air fan 80 · !air mining off · !air reboot BA-001 · !air invite npub1…'
+          )
         }
         const membersResult = await runWn(scoped(['groups', 'members', groupHex, '--json']), env) as unknown
         const rows = (Array.isArray(membersResult) ? membersResult : (membersResult as { members?: unknown[] })?.members) as Array<{ account_id?: string, npub?: string }> ?? []
@@ -170,10 +232,11 @@ export async function createRustMarmotBridge (deps: MarmotDeps): Promise<MarmotB
           deps.store.record('marmot', `group members: ${members.length}`)
         }
 
-        const messages = await runWn(scoped(['messages', 'list', groupHex, '--limit', '10', '--json']), env) as Array<{ message_id?: string, message_id_hex?: string, id?: string, sender?: string, sender_account?: string, plaintext?: string, content?: string }>
-        for (const m of messages ?? []) {
+        const messagesRaw = await runWn(scoped(['messages', 'list', groupHex, '--limit', '10', '--json']), env) as unknown
+        const messages = (Array.isArray(messagesRaw) ? messagesRaw : (messagesRaw as { messages?: unknown[] })?.messages ?? []) as Array<{ message_id?: string, message_id_hex?: string, id?: string, from?: string, sender?: string, sender_account?: string, plaintext?: string, content?: string }>
+        for (const m of messages) {
           const id = m.message_id ?? m.message_id_hex ?? m.id
-          const sender = m.sender ?? m.sender_account
+          const sender = m.from ?? m.sender ?? m.sender_account
           const text = m.plaintext ?? m.content
           if (!id || !sender || !text) continue
           if (seenMessages.has(id)) continue

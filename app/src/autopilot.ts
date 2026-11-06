@@ -119,14 +119,15 @@ export class Autopilot {
   }
 
   async discoverStations (): Promise<StationInfo[]> {
-    const events = await this.pool.querySync(this.relays, { kinds: [16158] }, { maxWait: 4000 })
+    const events = (await this.pool.querySync(this.relays, { kinds: [16158] }, { maxWait: 9000 }))
+      .sort((a, b) => b.created_at - a.created_at) // newest metadata wins: stations get renamed
     const seen = new Set<string>()
     const stations: StationInfo[] = []
     for (const ev of events) {
       if (seen.has(ev.pubkey)) continue
+      seen.add(ev.pubkey)
       const sensors = ev.tags.filter(([k]) => k === 'sensor')
       if (!sensors.some(([, v]) => v === 'pm25')) continue
-      seen.add(ev.pubkey)
       stations.push({
         pubkey: ev.pubkey,
         npub: nip19.npubEncode(ev.pubkey),

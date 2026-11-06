@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { Api, nip98Login, type DeviceStatus, type AutopilotStatus, type StationInfo, type Me } from './api'
 import './styles.css'
@@ -57,25 +57,31 @@ function DeviceCard ({ d, api, onChanged, actor }: { d: DeviceStatus, api: Api, 
         <div className="stat"><div className="k">Fan</div><div className="v">{Number(t.fan_rpm ?? 0).toFixed(0)} <small>rpm</small></div></div>
         <div className="stat"><div className="k">Filter</div><div className="v">{Number(t.filter_life_pct ?? 0).toFixed(0)} <small>%</small></div></div>
       </div>
-      <div className="row modes">
-        {MODES.map((m) => (
-          <button key={m} className={m === mode ? 'active' : ''} onClick={() => { void api.power(d.id, m).then(onChanged) }}>{m}</button>
-        ))}
-        <button
-          className={t.mining === 'true' ? '' : 'active'}
-          onClick={() => { void api.mining(d.id, t.mining !== 'true').then(onChanged) }}
-          title="solo miner"
-        >
-          ⛏ {t.mining === 'true' ? 'on' : 'off'}
-        </button>
-      </div>
-      <label className="fan">
-        fan
-        <input
-          type="range" min={0} max={100} defaultValue={50}
-          onMouseUp={(e) => { void api.fan(d.id, Number((e.target as HTMLInputElement).value)).then(onChanged) }}
-        />
-      </label>
+      {actor === 'auto'
+        ? <div className="muted" style={{ margin: '6px 0 10px' }}>Driven by autopilot — take manual control from the banner above.</div>
+        : (
+          <>
+            <div className="row modes">
+              {MODES.map((m) => (
+                <button key={m} className={m === mode ? 'active' : ''} onClick={() => { void api.power(d.id, m).then(onChanged) }}>{m}</button>
+              ))}
+              <button
+                className={t.mining === 'true' ? '' : 'active'}
+                onClick={() => { void api.mining(d.id, t.mining !== 'true').then(onChanged) }}
+                title="solo miner"
+              >
+                ⛏ {t.mining === 'true' ? 'on' : 'off'}
+              </button>
+            </div>
+            <label className="fan">
+              fan
+              <input
+                type="range" min={0} max={100} defaultValue={50}
+                onMouseUp={(e) => { void api.fan(d.id, Number((e.target as HTMLInputElement).value)).then(onChanged) }}
+              />
+            </label>
+          </>
+          )}
     </div>
   )
 }
@@ -83,7 +89,6 @@ function DeviceCard ({ d, api, onChanged, actor }: { d: DeviceStatus, api: Api, 
 function AutopilotPanel ({ status, stations, api, onChanged }: { status: AutopilotStatus | null, stations: StationInfo[], api: Api, onChanged: () => void }) {
   if (!status) return null
   const { config, engaged, readings } = status
-  const readingOf = (station: string) => readings.find((r) => r.station === station)
 
   return (
     <div className="card">
@@ -93,26 +98,35 @@ function AutopilotPanel ({ status, stations, api, onChanged }: { status: Autopil
           <span className={`badge ${engaged ? 'on' : 'off'}`}>{engaged ? 'AUTO: HIGH' : status.overrideUntil && status.overrideUntil > Date.now() ? `manual ${Math.ceil((status.overrideUntil - Date.now()) / 60000)}m` : 'idle'}</span>
           <button
             className={config.enabled ? 'active small' : 'small'}
+            disabled={config.stations.length === 0}
+            title={config.stations.length === 0 ? 'select a station first' : undefined}
             onClick={() => { void api.updateAutopilot({ enabled: !config.enabled }).then(onChanged) }}
           >
             {config.enabled ? 'enabled' : 'disabled'}
           </button>
         </span>
       </h3>
-      <div className="muted" style={{ marginBottom: 8 }}>Selected stations publish PM2.5 → above {config.onUgm3} µg/m³ the fleet purifies at high; below {config.offUgm3} it idles at {config.idleMode}. Any manual button click pauses this for 30 min.</div>
-      <div className="row" style={{ marginBottom: 8 }}>
-        <span className="muted">demo:</span>
-        <button className="small" onClick={() => { void api.simulate(45).then(onChanged).catch(() => {}) }}> spike 45 </button>
-        <button className="small" onClick={() => { void api.simulate(12).then(onChanged).catch(() => {}) }}> clear 12 </button>
-        <span className="muted">publishes a fake station reading on nostr</span>
+      <div className="muted" style={{ marginBottom: 8 }}>
+        {config.enabled
+          ? <>Selected stations publish PM2.5 → above {config.onUgm3} µg/m³ the fleet purifies at high; below {config.offUgm3} it idles at {config.idleMode}.</>
+          : <>Pick station(s) below, then enable. Thresholds unlock once the autopilot is running.</>}
       </div>
-      <div className="panel-row" style={{ marginTop: 12 }}>
+      {config.enabled && (
+        <div className="row" style={{ marginBottom: 8 }}>
+          <span className="muted">demo:</span>
+          <button className="small" onClick={() => { void api.simulate(45).then(onChanged).catch(() => {}) }}> spike 45 </button>
+          <button className="small" onClick={() => { void api.simulate(12).then(onChanged).catch(() => {}) }}> clear 12 </button>
+          <span className="muted">publishes a fake station reading on nostr</span>
+        </div>
+      )}
+      <div className={`panel-row${config.enabled ? '' : ' disabled'}`} style={{ marginTop: 12, opacity: config.enabled ? 1 : 0.45, pointerEvents: config.enabled ? 'auto' : 'none' }}>
         <div className="field">purify ON above
-          <input type="number" defaultValue={config.onUgm3} onBlur={(e) => { void api.updateAutopilot({ onUgm3: Number(e.target.value) }).then(onChanged) }} /> µg/m³
+          <input type="number" defaultValue={config.onUgm3} className={config.onUgm3 <= config.offUgm3 ? 'invalid' : ''} disabled={!config.enabled} onBlur={(e) => { void api.updateAutopilot({ onUgm3: Number(e.target.value) }).then(onChanged) }} /> µg/m³
         </div>
         <div className="field">idle below
-          <input type="number" defaultValue={config.offUgm3} onBlur={(e) => { void api.updateAutopilot({ offUgm3: Number(e.target.value) }).then(onChanged) }} /> µg/m³
+          <input type="number" defaultValue={config.offUgm3} className={config.onUgm3 <= config.offUgm3 ? 'invalid' : ''} disabled={!config.enabled} onBlur={(e) => { void api.updateAutopilot({ offUgm3: Number(e.target.value) }).then(onChanged) }} /> µg/m³
         </div>
+        {config.onUgm3 <= config.offUgm3 && <div className="field mode-error">ON must be above idle</div>}
         <div className="field">idle mode
           <div className="row">
             {MODES.filter((m) => m !== 'off').map((m) => (
@@ -120,38 +134,6 @@ function AutopilotPanel ({ status, stations, api, onChanged }: { status: Autopil
             ))}
           </div>
         </div>
-      </div>
-      <div className="stations">
-        {stations.length === 0 && <div className="muted">No kind-16158 PM2.5 stations found on the configured relays yet. Run <code>node app/tools/seed-weather.mjs station</code> or point at your own weather station.</div>}
-        {stations.map((s) => {
-          const selected = config.stations.includes(s.pubkey)
-          const reading = readingOf(s.pubkey)
-          return (
-            <div className="station" key={s.pubkey}>
-              <button
-                className={selected ? 'active small' : 'small'}
-                onClick={() => {
-                  const next = selected ? config.stations.filter((k) => k !== s.pubkey) : [...config.stations, s.pubkey]
-                  void api.updateAutopilot({ stations: next }).then(onChanged)
-                }}
-              >
-                {selected ? '✓' : '+'}
-              </button>
-              <div>
-                <div>{s.name ?? short(s.npub)} <span className="muted">{s.geohash ? `· ${s.geohash}` : ''}</span></div>
-                <div className="npub">{short(s.npub)}</div>
-              </div>
-              {(reading ?? s.latest) && (
-                <div className="reading">
-                  {reading ? reading.value.toFixed(1) : s.latest!.value.toFixed(1)} µg/m³
-                  <span className="muted" style={{ display: 'block', fontSize: 10, fontWeight: 400 }}>
-                    {ago((reading ?? s.latest)!.at)}{reading ? ' · live' : ''}
-                  </span>
-                </div>
-              )}
-            </div>
-          )
-        })}
       </div>
     </div>
   )
@@ -224,24 +206,31 @@ function ago (at: number): string {
 
 
 function Dashboard ({ api, me }: { api: Api, me: Me }) {
-  const [tab, setTab] = useState<'overview' | 'devices' | 'automation' | 'people' | 'activity'>('overview')
+  const [tab, setTab] = useState<'overview' | 'people' | 'activity'>('overview')
+  const stationsRef = useRef<HTMLDetailsElement>(null)
   const [devices, setDevices] = useState<DeviceStatus[]>([])
   const [autopilot, setAutopilot] = useState<AutopilotStatus | null>(null)
+  const [modeError, setModeError] = useState<string | null>(null)
   const [stations, setStations] = useState<StationInfo[]>([])
   const [marmot, setMarmot] = useState<Record<string, unknown> | null>(null)
   const [events, setEvents] = useState<Array<{ ts: number, kind: string, message: string }>>([])
   const refresh = () => {
-    void api.devices().then((d) => setDevices(d.devices)).catch(() => {})
-    void api.autopilot().then(setAutopilot).catch(() => {})
-    void api.marmot().then(setMarmot).catch(() => {})
-    void api.events().then((e) => setEvents(e.events)).catch(() => {})
+    // Mid-session expiry: token is already cleared by Api.call — one reload
+    // lands on the login page (no loop: no token means no me() call).
+    const onExpired = (err: unknown) => {
+      if ((err as Error).message === 'ERR_SESSION_EXPIRED') window.location.reload()
+    }
+    void api.devices().then((d) => setDevices(d.devices)).catch(onExpired)
+    void api.autopilot().then(setAutopilot).catch(onExpired)
+    void api.marmot().then(setMarmot).catch(onExpired)
+    void api.events().then((e) => setEvents(e.events)).catch(onExpired)
   }
-
   useEffect(() => {
     refresh()
     void api.stations().then((s) => setStations(s.stations)).catch(() => {})
     const timer = setInterval(refresh, 5000)
-    return () => clearInterval(timer)
+    const stationsTimer = setInterval(() => { void api.stations().then((s) => setStations(s.stations)).catch(() => {}) }, 60000)
+    return () => { clearInterval(timer); clearInterval(stationsTimer) }
   }, [])
 
   const fleetState = deriveFleetState(autopilot)
@@ -257,7 +246,7 @@ function Dashboard ({ api, me }: { api: Api, me: Me }) {
       <header>
         <div className="brand">mdk<span>²</span></div>
         <nav className="tabs">
-          {(['overview', 'devices', 'automation', 'people', 'activity'] as const).map((t) => (
+          {((['overview', 'people', 'activity'] as const)).map((t) => (
             <button key={t} className={tab === t ? 'tab active' : 'tab'} onClick={() => setTab(t)}>{t}</button>
           ))}
         </nav>
@@ -269,33 +258,75 @@ function Dashboard ({ api, me }: { api: Api, me: Me }) {
 
       {tab === 'overview' && (
         <>
-          <div className={`banner ${fleetState.tone}`}>
-            <div>
-              <div className="banner-title">{fleetState.title}</div>
-              <div className="banner-sub">{fleetState.sub}</div>
-            </div>
-            <div className="banner-actions">
-              {fleetState.action === 'resume' && <button className="small" onClick={() => { void api.resumeAutopilot().then(refresh) }}>resume auto</button>}
-              {fleetState.action === 'enable' && <button className="small" onClick={() => { void api.updateAutopilot({ enabled: true }).then(refresh) }}>enable auto</button>}
-              {lastReading && <span className="banner-reading">PM2.5 {lastReading.value.toFixed(1)} · {ago(lastReading.at)}</span>}
+          {/* Mode control: MANUAL (default, narrow) | AUTO (wide, station picker inside) */}
+          <div className="modecontrol">
+            <button
+              className={`mode ${fleetState.actor !== 'auto' ? 'on' : ''}`}
+              onClick={() => { setModeError(null); if (autopilot?.config.enabled) void api.pauseAutopilot().then(refresh) }}
+            >
+              MANUAL
+              <span className="modesub">{fleetState.actor === 'manual' ? (autopilot?.config.enabled ? 'paused ' + Math.ceil(((autopilot.overrideUntil ?? 0) - Date.now()) / 60000) + 'm' : 'full control') : 'takes over'}</span>
+            </button>
+
+            <div className={`autopane ${fleetState.actor === 'auto' ? 'on' : ''}`}>
+              <button
+                className="autopane-head"
+                onClick={() => {
+                  const cfg = autopilot?.config
+                  if ((cfg?.stations.length ?? 0) === 0) { setModeError('Tick at least one station below, then press AUTO again.'); return }
+                  if ((cfg?.onUgm3 ?? 0) <= (cfg?.offUgm3 ?? 0)) { setModeError(`Purify threshold (${cfg?.onUgm3}) must be above idle (${cfg?.offUgm3}) — fix in Automation settings.`); return }
+                  setModeError(null)
+                  if (!cfg?.enabled) void api.updateAutopilot({ enabled: true }).then(refresh)
+                  else void api.resumeAutopilot().then(refresh)
+                }}
+              >
+                <span className="autopane-title">AUTO</span>
+                <span className="modesub">{fleetState.actor === 'auto' ? fleetState.title.replace(/^AUTO · /, '') : (autopilot?.config.enabled ? 'paused' : 'off')}</span>
+              </button>
+              <div className="autopane-stations">
+                <div className="muted" style={{ fontSize: 11, marginBottom: 4 }}>stations to watch</div>
+                {stations.length === 0 && <div className="muted">none found yet…</div>}
+                {stations.map((s) => {
+                  const selected = (autopilot?.config.stations ?? []).includes(s.pubkey)
+                  const reading = (autopilot?.readings ?? []).find((r) => r.station === s.pubkey)
+                  return (
+                    <label key={s.pubkey} className={`stationrow${selected ? ' sel' : ''}`}>
+                      <input
+                        type="checkbox"
+                        checked={selected}
+                        onChange={() => {
+                          const cur = autopilot?.config.stations ?? []
+                          void api.updateAutopilot({ stations: selected ? cur.filter((k) => k !== s.pubkey) : [...cur, s.pubkey] }).then(refresh)
+                        }}
+                      />
+                      <span className="stationname">{s.name ?? short(s.npub)}</span>
+                      {(reading ?? s.latest) && (
+                        <span className="stationval">{(reading ?? s.latest)!.value.toFixed(1)} µg/m³ · {ago((reading ?? s.latest)!.at)}</span>
+                      )}
+                    </label>
+                  )
+                })}
+              </div>
             </div>
           </div>
+          {modeError && <div className="mode-error">⚠️ {modeError}</div>}
+
+          <details className="stationsbox" ref={stationsRef}>
+            <summary>Automation settings{lastReading ? ` · latest ${lastReading.value.toFixed(1)} µg/m³ ${ago(lastReading.at)}` : ''}</summary>
+            <AutopilotPanel status={autopilot} stations={stations} api={api} onChanged={refresh} />
+          </details>
+
+          {/* 3. Fleet stats + devices */}
           <div className="fleetbar">
             <div className="stat"><div className="k">indoor PM2.5 (mean)</div><div className="v">{meanPm25 !== null ? meanPm25.toFixed(1) : '—'} <small>µg/m³</small></div></div>
             <div className="stat"><div className="k">hashrate</div><div className="v">{totalHash.toFixed(2)} <small>TH/s</small></div></div>
             <div className="stat"><div className="k">power</div><div className="v">{totalW.toFixed(0)} <small>W</small></div></div>
             <div className="stat"><div className="k">devices</div><div className="v">{devices.length}</div></div>
           </div>
-          <div className="minidevices">
-            {devices.map((d) => (
-              <div className={`minidevice ${fleetState.actor}`} key={d.id}>
-                <span className="id">{d.id}</span>
-                <span className={`modetag ${fleetState.actor}`}>{fleetState.actor === 'auto' ? '⚡' : fleetState.actor === 'manual' ? '✋' : ''} {String(d.telemetry.power_mode ?? '?')}</span>
-                <span className="pm">{Number(d.telemetry.pm25_ugm3 ?? 0).toFixed(1)} µg/m³</span>
-                <span className="temp">{Number(d.telemetry.temp_c ?? 0).toFixed(0)}°C</span>
-              </div>
-            ))}
+          <div className="grid">
+            {devices.map((d) => <DeviceCard key={d.id} d={d} api={api} onChanged={refresh} actor={fleetState.actor} />)}
           </div>
+
           <section>
             <h2>Recent</h2>
             <EventLog events={events.slice(-8)} />
@@ -303,21 +334,6 @@ function Dashboard ({ api, me }: { api: Api, me: Me }) {
         </>
       )}
 
-      {tab === 'devices' && (
-        <section>
-          <h2>{fleetState.actor === 'auto' ? 'Under AUTO control' : fleetState.actor === 'manual' ? 'Under MANUAL control — auto paused' : 'Manual control'}</h2>
-          <div className="grid">
-            {devices.map((d) => <DeviceCard key={d.id} d={d} api={api} onChanged={refresh} actor={fleetState.actor} />)}
-          </div>
-        </section>
-      )}
-
-      {tab === 'automation' && (
-        <section>
-          <h2>Automation</h2>
-          <AutopilotPanel status={autopilot} stations={stations} api={api} onChanged={refresh} />
-        </section>
-      )}
 
       {tab === 'people' && (
         <section>
@@ -352,6 +368,31 @@ function deriveFleetState (autopilot: AutopilotStatus | null): FleetState {
   return { tone: 'idle', title: 'AUTO · monitoring', sub: `Air is fine (below ${autopilot.config.offUgm3} µg/m³) — devices idle at ${autopilot.config.idleMode}.`, action: null, actor: 'auto' }
 }
 
+
+class CrashScreen extends React.Component<{ children: React.ReactNode }, { error: Error | null }> {
+  constructor (props: { children: React.ReactNode }) {
+    super(props)
+    this.state = { error: null }
+  }
+
+  static getDerivedStateFromError (error: Error) {
+    return { error }
+  }
+
+  render () {
+    if (this.state.error) {
+      return (
+        <div className="login">
+          <h1>mdk<span>²</span> hit a bug</h1>
+          <p className="error" style={{ whiteSpace: 'pre-wrap' }}>{String(this.state.error.stack ?? this.state.error.message).slice(0, 600)}</p>
+          <button className="primary" onClick={() => { localStorage.removeItem('mdk2.token'); window.location.reload() }}>sign out &amp; reload</button>
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
+
 function App () {
   const [state, setState] = useState<{ api: Api, me: Me } | null>(null)
 
@@ -366,4 +407,5 @@ function App () {
   return <Dashboard api={state.api} me={state.me} />
 }
 
-createRoot(document.getElementById('root')!).render(<App />)
+window.__mdk2boot = true
+createRoot(document.getElementById('root')!).render(<CrashScreen><App /></CrashScreen>)

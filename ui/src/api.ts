@@ -54,6 +54,7 @@ export async function nip98Login (): Promise<{ token: string, me: Me }> {
   })
   const body = await res.json()
   if (!res.ok) throw new Error(body.error ?? `login failed (${res.status})`)
+  localStorage.setItem('mdk2.token', body.token)
   return { token: body.token, me: { npub: body.npub, isAdmin: body.isAdmin, source: body.source } }
 }
 
@@ -65,15 +66,23 @@ export class Api {
       ...init,
       headers: { ...(init?.headers || {}), authorization: `Bearer ${this.token}` }
     })
+    if (res.status === 401) {
+      // Session died (server restart): drop the token so the next boot lands
+      // on the login page. Callers decide whether to reload — this must NOT
+      // reload here or boot-time expiry becomes a reload loop.
+      localStorage.removeItem('mdk2.token')
+      throw new Error('ERR_SESSION_EXPIRED')
+    }
     const body = await res.json().catch(() => ({}))
     if (!res.ok) throw new Error((body as { error?: string }).error ?? `request failed (${res.status})`)
     return body
   }
 
-
   me (): Promise<Me> { return this.call('/api/me') as Promise<Me> }
   simulate (value: number) { return this.call('/api/autopilot/simulate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ value }) }) }
+  pauseAutopilot () { return this.call('/api/autopilot/pause', { method: 'POST' }) }
   resumeAutopilot () { return this.call('/api/autopilot/resume', { method: 'POST' }) }
+
   devices (): Promise<{ workerCount: number, devices: DeviceStatus[] }> {
     return this.call('/api/devices') as Promise<{ workerCount: number, devices: DeviceStatus[] }>
   }

@@ -174,6 +174,7 @@ export function buildServer (deps: ServerDeps): FastifyInstance {
   })
 
 
+  app.post('/api/autopilot/pause', async () => { autopilot.manualOverride(); return autopilot.status() })
   app.post('/api/autopilot/resume', async () => { autopilot.resume(); return autopilot.status() })
   app.post('/api/autopilot/simulate', async (req: FastifyRequest) => {
     const { value } = req.body as { value?: number }

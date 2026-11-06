@@ -56,8 +56,9 @@ export interface MarmotDeps {
   store: Store
   onCommand: (command: ChatCommand) => Promise<unknown>
   fleetStatus: () => Promise<FleetStatus>
+  autopilotStatus: () => unknown
+  setAutopilot: (patch: Record<string, unknown>) => Promise<unknown>
 }
-
 // Durable store: one v8-structured-clone blob per key. Plain JSON silently
 // corrupts the Uint8Array/BigInt values Marmot stores; structured clone is
 // the binary-safe encoding the storage docs prescribe.
@@ -196,18 +197,40 @@ class PoolNetwork implements NostrNetworkInterface {
 
 const POWER_MODES = ['off', 'eco', 'low', 'high']
 
-// "!air on high BA-002" → { name: 'setPowerMode', params: { mode: 'high' }, deviceId: 'BA-002' }
+// Chat grammar: slash commands, with the legacy "!air …" spelling still
+// accepted. "/mode high BA-002" → { name: 'setPowerMode', params: {…}, deviceId: 'BA-002' }
 export function parseAirCommand (text: string): ChatCommand | { error: string } | null {
   const tokens = text.trim().split(/\s+/)
-  if (tokens[0] !== '!air') return null
-  const rest = tokens.slice(1)
+  const head = tokens[0]
+  let rest = tokens.slice(1)
+  if (head === '!air') {
+    // legacy: !air on high [id]
+  } else if (head?.startsWith('/') && head.length > 1) {
+    rest = [head.slice(1), ...rest]
+  } else {
+    return null
+  }
   const deviceId = rest.length > 0 && /^BA-[0-9]{3}$/.test(rest[rest.length - 1]) ? rest.pop() : undefined
+  const [verb, arg, arg2] = rest
 
-  const [verb, arg] = rest
   switch (verb) {
     case undefined:
     case 'status':
       return { name: 'status', params: {}, deviceId }
+    case 'help':
+      return { name: 'help', params: {} }
+    case 'devices':
+      return { name: 'devices', params: {} }
+    case 'auto':
+      return { name: 'auto', params: {} }
+    case 'toggle':
+      if (arg === 'auto') return { name: 'toggleAuto', params: {} }
+      if (arg === 'manual') return { name: 'toggleManual', params: {} }
+      return { error: 'usage: /toggle auto | /toggle manual' }
+    case 'mode': {
+      const mode = POWER_MODES.includes(arg ?? '') ? arg : 'high'
+      return { name: 'setPowerMode', params: { mode }, deviceId }
+    }
     case 'on': {
       const mode = arg && POWER_MODES.includes(arg) && arg !== 'off' ? arg : 'high'
       return { name: 'setPowerMode', params: { mode }, deviceId }
@@ -220,21 +243,21 @@ export function parseAirCommand (text: string): ChatCommand | { error: string } 
       return { name: 'setPowerMode', params: { mode: verb }, deviceId }
     case 'fan': {
       const pct = Number(arg)
-      if (!Number.isFinite(pct) || pct < 0 || pct > 100) return { error: 'fan needs a 0–100 percent' }
+      if (!Number.isFinite(pct) || pct < 0 || pct > 100) return { error: 'usage: /fan <0-100> [id]' }
       return { name: 'setFanSpeed', params: { pct }, deviceId }
     }
     case 'mining':
-      if (arg !== 'on' && arg !== 'off') return { error: 'mining needs on|off' }
+      if (arg !== 'on' && arg !== 'off') return { error: 'usage: /mining on|off [id]' }
       return { name: 'setMining', params: { enabled: arg === 'on' }, deviceId }
     case 'reboot':
-      if (!deviceId) return { error: 'reboot needs a device id (e.g. BA-001)' }
-      return { name: 'reboot', params: {}, deviceId }
+      if (!deviceId && !/^BA-/.test(arg ?? '')) return { error: 'usage: /reboot BA-001' }
+      return { name: 'reboot', params: {}, deviceId: deviceId ?? arg }
     case 'invite': {
-      if (!arg || !arg.startsWith('npub1')) return { error: 'invite needs an npub: !air invite npub1…' }
+      if (!arg || !arg.startsWith('npub1')) return { error: 'usage: /invite npub1…' }
       return { name: 'invite', params: { npub: arg } }
     }
     default:
-      return { error: `unknown verb "${verb}" — try: status | on [eco|low|high] | off | fan <pct> | mining on|off | reboot <id> | invite <npub>` }
+      return { error: `unknown command "${verb}" — /help lists everything` }
   }
 }
 
