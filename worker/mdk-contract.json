@@ -1,0 +1,123 @@
+{
+  "contractVersion": "1",
+  "metadata": {
+    "provider": "heatbit",
+    "deviceFamily": "miner",
+    "brand": "Heatbit",
+    "modelsSupported": ["BITAIR"],
+    "overview": "Heatbit BitAir - HEPA air purifier with a solo bitcoin miner inside. Firmware is ESP-Miner-derived and serves an AxeOS-style local HTTP API. Controls purification and mining; reports air quality and miner telemetry. Operations affect physical hardware - prioritize thermal safety."
+  },
+  "capabilities": {
+    "telemetry": [
+      {
+        "name": "hashrate_ghs",
+        "unit": "TH/s",
+        "type": "number",
+        "handler": "src/telemetry/hashrate-ghs.js",
+        "description": "Real-time hashrate. BitAir hashes in the ~1 TH/s class."
+      },
+      {
+        "name": "power_w",
+        "unit": "W",
+        "type": "number",
+        "handler": "src/telemetry/power-w.js",
+        "description": "Current power draw."
+      },
+      {
+        "name": "fan_rpm",
+        "unit": "rpm",
+        "type": "number",
+        "handler": "src/telemetry/fan-rpm.js",
+        "description": "Purifier fan speed."
+      },
+      {
+        "name": "temp_c",
+        "unit": "°C",
+        "type": "number",
+        "handler": "src/telemetry/temp-c.js",
+        "description": "ASIC board temperature. Above 85°C requires intervention."
+      },
+      {
+        "name": "filter_life_pct",
+        "unit": "%",
+        "type": "number",
+        "handler": "src/telemetry/filter-life-pct.js",
+        "description": "Remaining HEPA filter life."
+      },
+      {
+        "name": "pm25_ugm3",
+        "type": "string",
+        "handler": "src/telemetry/pm25-ugm3.js",
+        "description": "Ambient PM2.5 concentration in µg/m³ from the device's own sensor, as a string. The canonical unit vocabulary has no mass-concentration unit yet; parse as float."
+      },
+      {
+        "name": "power_mode",
+        "type": "string",
+        "handler": "src/telemetry/power-mode.js",
+        "description": "Active purification power mode: off, eco, low or high."
+      },
+      {
+        "name": "mining",
+        "type": "string",
+        "handler": "src/telemetry/mining.js",
+        "description": "'true' when the solo miner is hashing."
+      }
+    ],
+    "commands": [
+      {
+        "name": "setPowerMode",
+        "handler": "src/commands/set-power-mode.js",
+        "description": "Sets the purification power mode.",
+        "params": [
+          {
+            "name": "mode",
+            "type": "string",
+            "required": true,
+            "enum": ["off", "eco", "low", "high"]
+          }
+        ]
+      },
+      {
+        "name": "setFanSpeed",
+        "handler": "src/commands/set-fan-speed.js",
+        "description": "Sets the purifier fan speed as a percentage.",
+        "params": [
+          {
+            "name": "pct",
+            "type": "number",
+            "required": true,
+            "min": 0,
+            "max": 100
+          }
+        ]
+      },
+      {
+        "name": "setMining",
+        "handler": "src/commands/set-mining.js",
+        "description": "Enables or disables the solo miner. Purification continues.",
+        "params": [
+          {
+            "name": "enabled",
+            "type": "boolean",
+            "required": true
+          }
+        ]
+      },
+      {
+        "name": "reboot",
+        "handler": "src/commands/reboot.js",
+        "description": "Restarts the device controller.",
+        "constraints": "Do not call more than once per 5 minutes.",
+        "params": []
+      }
+    ],
+    "health": {
+      "supportedStates": ["OK", "DEGRADED", "OFFLINE"]
+    },
+    "errors": {
+      "ERR_BAD_POWER_MODE": "The device rejected the requested power mode.",
+      "ERR_BAD_FAN_SPEED": "The fan percent is outside the device's supported range.",
+      "ERR_DEVICE_CALL_FAILED": "The device's HTTP API call failed or returned an error."
+    }
+  }
+}

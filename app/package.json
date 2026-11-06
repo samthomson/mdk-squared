@@ -1,0 +1,32 @@
+{
+  "name": "mdk-squared-app",
+  "version": "0.1.0",
+  "description": "mdk² — BitAir fleet control: Tether MDK device plane, Nostr auth, Marmot groups, PM2.5 autopilot",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "dev": "tsx watch src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@fastify/static": "^8.1.0",
+    "@internet-privacy/marmot-ts": "0.9.0",
+    "@tetherto/mdk-client": "0.13.1",
+    "@tetherto/mdk-core": "0.13.1",
+    "@tetherto/mdk-worker": "0.13.1",
+    "applesauce-core": "^7.0.3",
+    "fastify": "^5.2.1",
+    "nostr-tools": "^2.10.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}

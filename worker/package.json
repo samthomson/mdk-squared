@@ -1,0 +1,18 @@
+{
+  "name": "bitair-mdk-worker",
+  "version": "0.1.0",
+  "description": "MDK Worker Plugin for the Heatbit BitAir HEPA air purifier with a built-in solo bitcoin miner (ESP-Miner-derived firmware, AxeOS-style local HTTP API)",
+  "license": "MIT",
+  "engines": { "node": ">=24" },
+  "type": "commonjs",
+  "private": true,
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "debug": "^4.4.1"
+  },
+  "devDependencies": {
+    "@tetherto/mdk-worker": "0.13.1"
+  }
+}

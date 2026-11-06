@@ -1,0 +1,22 @@
+services:
+  mdk2:
+    build: .
+    image: mdk-squared
+    container_name: mdk2
+    ports:
+      - "${PORT:-8090}:8080"
+    env_file:
+      - .env
+    environment:
+      # Fixed inside the container; only the host side of the mapping moves.
+      PORT: 8080
+      DHT_HOST: 127.0.0.1
+      DHT_PORT: 49737
+      MOCK_PORT_BASE: 18100
+      DATA_DIR: /data
+    volumes:
+      - mdk2-data:/data
+    restart: unless-stopped
+
+volumes:
+  mdk2-data:

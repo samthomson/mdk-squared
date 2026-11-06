@@ -1,0 +1,13 @@
+node_modules/
+dist/
+data/
+data-*/
+.env
+.env.bak
+*.log
+.DS_Store
+app/.test-admin-sk.hex
+app/.test-token
+app/.seed-station-sk
+*.sqlite3*
+wnd.pid
